@@ -16,6 +16,7 @@ import trio
 from .errors import ApplicationError
 from .events import Event, EventBus
 from .models import RuntimeConfig, ServiceStatus
+from .paths import DataPaths
 from .services import (
     ConnectionService,
     DiscoveryService,
@@ -45,13 +46,28 @@ class ApplicationRuntime:
             raise ValueError("ApplicationRuntime requires config= or service=")
         self.config = config
         self.events = event_bus or EventBus()
+        self.paths: DataPaths | None = None
 
         if service is None:
+            from chatroom import configure_system_log
             from headless import HeadlessService
 
-            self.store = store or open_store(config.storage_path)
+            # Resolve and prove the data directory before anything is written:
+            # a bad path fails startup with one actionable error instead of a
+            # half-configured node whose SQLite or key write fails later.
+            self.paths = DataPaths.resolve(
+                data_dir=config.data_dir, storage_path=config.storage_path
+            ).ensure_writable()
+            configure_system_log(self.paths.system_log_file)
+
+            self.store = store or open_store(
+                ":memory:"
+                if self.paths.database_in_memory
+                else str(self.paths.database_file)
+            )
             self.service = HeadlessService(
-                **config.service_kwargs(), message_store=self.store
+                **config.service_kwargs(identity_path=str(self.paths.identity_file)),
+                message_store=self.store,
             )
         else:
             self.service = service
@@ -269,6 +285,11 @@ class ApplicationRuntime:
             "listen_addrs": list(getattr(service, "transport_addrs", []) or []),
             "announce_addrs": list(getattr(service, "full_multiaddrs", []) or []),
             "storage": self.storage.health(),
+            "data_dir": str(self.paths.root) if self.paths else None,
+            "identity_file": (
+                str(self.paths.identity_file) if self.paths else None
+            ),
+            "identity_source": getattr(service, "identity_source", None),
         }
 
     # ------------------------------------------------------------------ #

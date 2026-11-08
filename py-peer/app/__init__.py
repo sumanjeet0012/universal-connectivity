@@ -12,6 +12,7 @@ Nothing here imports an adapter framework.
 from .errors import (
     ApplicationError,
     ConflictError,
+    DataDirectoryError,
     NotReadyError,
     NotFoundError,
     OperationError,
@@ -23,6 +24,7 @@ from .runtime import ApplicationRuntime, RuntimeConfig
 __all__ = [
     "ApplicationError",
     "ConflictError",
+    "DataDirectoryError",
     "NotReadyError",
     "NotFoundError",
     "OperationError",

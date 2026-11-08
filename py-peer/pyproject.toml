@@ -15,6 +15,7 @@ dependencies = [
     "kivy>=2.3.0",
     "kivymd>=1.2.0",
     "python-dotenv>=1.2.2",
+    "platformdirs>=4.0.0",
     "groq>=1.0.0",
     "tornado>=6.5.5"
 ]

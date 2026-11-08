@@ -22,12 +22,16 @@ from headless import HeadlessService
 from ui import ChatUI
 from app import ApplicationRuntime, RuntimeConfig
 
-DEFAULT_SEED = "py-peer"
-
-
 def build_runtime(args) -> ApplicationRuntime:
     """Create the single runtime that owns the peer for this process."""
-    return ApplicationRuntime(RuntimeConfig.from_namespace(args))
+    runtime = ApplicationRuntime(RuntimeConfig.from_namespace(args))
+    paths = getattr(runtime, "paths", None)
+    if paths is not None:
+        logger.info(
+            f"Data directory: {paths.root} (from {paths.source}); "
+            f"identity: {paths.identity_file}"
+        )
+    return runtime
 
 # Configure logging
 def setup_logging(ui_mode=False):
@@ -404,8 +408,10 @@ def main():
         "-s",
         "--seed",
         type=str,
-        default=DEFAULT_SEED,
-        help="seed for deterministic peer ID generation",
+        default=None,
+        help="Deterministic peer ID for development/testing, derived from this "
+             "seed and not written to disk. Default: a persisted random "
+             "identity in the data directory.",
     )
     parser.add_argument(
         "-t",
@@ -414,14 +420,22 @@ def main():
         help="Custom topic to subscribe.",
     )
     parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        dest="data_dir",
+        metavar="PATH",
+        help="Directory for the peer identity, message history, and system log "
+             "(default: $UC_DATA_DIR, else the platform data directory).",
+    )
+    parser.add_argument(
         "--storage-path",
         type=str,
         default=None,
         dest="storage_path",
         metavar="PATH",
-        help="SQLite file for durable message history (default: in-memory, "
-             "which is lost on restart). Use :memory: for an ephemeral "
-             "SQLite database.",
+        help="SQLite file for message history (default: <data-dir>/history.db). "
+             "Use :memory: for an ephemeral SQLite database.",
     )
     parser.add_argument(
         "--api",

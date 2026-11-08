@@ -75,3 +75,10 @@ class StorageError(ApplicationError):
 
     code = "storage_error"
     http_status = 500
+
+
+class DataDirectoryError(ApplicationError):
+    """The configured data directory cannot be created or written."""
+
+    code = "data_directory_error"
+    http_status = 500

@@ -7,6 +7,7 @@ pubsub subscriptions, and peer discovery.
 
 import base58
 import logging
+import os
 import time
 import trio
 from dataclasses import dataclass
@@ -19,20 +20,63 @@ from libp2p.pubsub.pubsub import Pubsub
 
 logger = logging.getLogger("chatroom")
 
-# Create a separate logger for system messages. Rotate the file: a long-running
-# peer must not keep appending to one unbounded file forever.
+# Separate logger for the human-readable system log. The file location is
+# configured at startup (data directory) rather than at import time, so running
+# the peer never drops a system_messages.txt into the current directory.
+SYSTEM_LOG_MAX_BYTES = 1_000_000
+SYSTEM_LOG_BACKUPS = 3
+
 system_logger = logging.getLogger("system_messages")
-system_handler = RotatingFileHandler(
-    "system_messages.txt",
-    mode="a",
-    maxBytes=1_000_000,
-    backupCount=3,
-    encoding="utf-8",
-)
-system_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
-system_logger.addHandler(system_handler)
 system_logger.setLevel(logging.INFO)
 system_logger.propagate = False  # Don't send to parent loggers
+system_logger.addHandler(logging.NullHandler())
+
+# Absolute path of the active rotating log file, or None when disabled.
+system_log_path: str | None = None
+
+
+def configure_system_log(path=None) -> str | None:
+    """Send system messages to a rotating file at ``path``.
+
+    Called by the runtime once the data directory is known. Idempotent: an
+    existing rotating handler is replaced instead of stacked, so tests and
+    repeated runtimes keep exactly one file sink. Returns the active path, or
+    ``None`` when the log is disabled because no path was given or the handler
+    could not be created (for example an unwritable directory).
+    """
+    global system_log_path
+
+    for handler in list(system_logger.handlers):
+        if isinstance(handler, RotatingFileHandler):
+            system_logger.removeHandler(handler)
+            handler.close()
+    system_log_path = None
+
+    if path is None:
+        return None
+
+    target = os.path.abspath(os.path.expanduser(os.fspath(path)))
+    try:
+        directory = os.path.dirname(target)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        handler = RotatingFileHandler(
+            target,
+            mode="a",
+            maxBytes=SYSTEM_LOG_MAX_BYTES,
+            backupCount=SYSTEM_LOG_BACKUPS,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning(f"System log disabled at {target}: {exc}")
+        return None
+
+    handler.setFormatter(
+        logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
+    )
+    system_logger.addHandler(handler)
+    system_log_path = target
+    return target
 
 # Chat room buffer size for incoming messages
 CHAT_ROOM_BUF_SIZE = 128

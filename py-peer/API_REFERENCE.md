@@ -430,10 +430,11 @@ curl -X POST http://localhost:8765/api/v1/messages \
 
 Returns stored messages for a topic. Supports pagination with `limit` and `offset` query params.
 
-History is kept in process memory by default and is lost on restart. Start the
-peer with `--storage-path PATH` to retain it in a local SQLite file. This is
-local retention only — the API never returns messages a peer missed while
-offline.
+History is stored in `<data-dir>/history.db` (SQLite) and survives restarts.
+`--data-dir PATH` (or `UC_DATA_DIR`) moves the whole data root; `--storage-path
+PATH` overrides just the database, and `--storage-path :memory:` keeps history
+ephemeral. This is local retention only — the API never returns messages a peer
+missed while offline.
 
 **Request:**
 ```bash
@@ -1266,7 +1267,10 @@ curl http://localhost:8765/api/v1/service/config
       "messages": 12,
       "peer_records": 0,
       "settings": 0
-    }
+    },
+    "data_dir": "/Users/alice/Library/Application Support/py-peer",
+    "identity_file": "/Users/alice/Library/Application Support/py-peer/identity/peer.key",
+    "identity_source": "persisted"
   },
   "error": null,
   "timestamp": 1772532115.19

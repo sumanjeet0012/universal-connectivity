@@ -20,6 +20,7 @@ import janus
 import trio
 import trio_asyncio
 import hashlib
+from pathlib import Path
 from queue import Empty, Full
 from typing import List, Dict, Any, Set
 from libp2p.discovery.bootstrap import BootstrapDiscovery
@@ -29,6 +30,11 @@ from libp2p.kad_dht.kad_dht import (
 )
 from libp2p import new_host, IHost
 from libp2p.crypto.ed25519 import create_new_key_pair
+from libp2p.identity_utils import (
+    create_new_ed25519_key_pair,
+    load_identity,
+    save_identity,
+)
 from libp2p.pubsub.gossipsub import GossipSub
 from libp2p.pubsub.pubsub import Pubsub
 from libp2p.tools.anyio_service import background_trio_service
@@ -61,8 +67,6 @@ FILE_MESSAGE_PREFIX = "[FILE]"
 # Default download directory
 DEFAULT_DOWNLOAD_DIR = os.path.expanduser("~/Downloads")
 
-DEFAULT_SEED = "py-peer"  # Default seed for deterministic peer ID generation
-
 # Resource bounds. The API and the network are untrusted inputs: without caps
 # a slow client, a busy topic, or a message flood can grow these structures
 # until the peer is OOM-killed.
@@ -84,6 +88,25 @@ def _write_bytes(path: str, data: bytes) -> None:
     """Blocking file write, called from a worker thread when possible."""
     with open(path, "wb") as f:
         f.write(data)
+
+
+def _save_identity_atomically(key_pair, path: Path) -> None:
+    """Persist a private key without leaving a half-written file behind.
+
+    ``save_identity`` writes the libp2p protobuf format and sets mode 0600 on
+    POSIX. Writing to a sibling temp file and renaming means a crash or a full
+    disk leaves the previous identity intact instead of an unreadable key.
+    """
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        save_identity(key_pair, temporary)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
 
 # Bootstrap nodes for peer discovery
 BOOTSTRAP_PEERS = [
@@ -112,7 +135,7 @@ class HeadlessService:
     Headless service that manages libp2p components and provides data to UI through queues.
     """
 
-    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1", listen_addrs: List[str] = None, announce_addrs: List[str] = None, message_store=None, event_bus=None):
+    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1", listen_addrs: List[str] = None, announce_addrs: List[str] = None, message_store=None, event_bus=None, identity_path: str = None):
         self.nickname = nickname
         self.port = port if port != 0 else 4001
         self.connect_addrs = connect_addrs or []
@@ -137,7 +160,16 @@ class HeadlessService:
         self.event_bus = event_bus  # optional app.events.EventBus; additive
         self.ui_mode = ui_mode  # Flag to control logging behavior
         self.strict_signing = strict_signing  # Flag to control message signing
-        self.seed = seed if seed else DEFAULT_SEED  # Seed string for deterministic peer ID (default: 'py-peer')
+        # Identity: an explicit --seed is a deliberate deterministic identity
+        # for development; otherwise the runtime injects a persisted key file
+        # under the data directory (see _load_identity).
+        self.seed = seed or None
+        self.identity_path = (
+            os.path.abspath(os.path.expanduser(identity_path))
+            if identity_path
+            else None
+        )
+        self.identity_source = None  # seed | persisted | created | ephemeral
         self.topic = topic  # Custom topic to use instead of default
 
         # libp2p components
@@ -216,7 +248,7 @@ class HeadlessService:
         self._known_connected_peers: set[str] = set()
 
         if not ui_mode:  # Only log initialization if not in UI mode
-            logger.info(f"HeadlessService initialized - nickname: {nickname}, port: {self.port}, strict_signing: {strict_signing}, seed: {self.seed}")
+            logger.info(f"HeadlessService initialized - nickname: {nickname}, port: {self.port}, strict_signing: {strict_signing}")
     
     async def monitor_peers(self):
         while True:
@@ -568,11 +600,74 @@ class HeadlessService:
             )
         return normalized
 
+    def _load_identity(self):
+        """Return the key pair this host runs with.
+
+        Resolution order is deliberate, because the peer ID is derived from the
+        key and other peers dial and address us by it:
+
+        1. An explicit ``--seed`` uses a deterministic key and never touches
+           disk. This keeps the historical development/test behaviour and lets
+           callers request a stable peer ID.
+        2. An existing identity file is loaded as-is. This is what makes the
+           peer ID survive a restart, even if ``--seed`` is added or removed.
+        3. No file yet generates one fresh Ed25519 key and persists it with
+           mode 0600.
+
+        Without a data directory the identity is ephemeral and the peer ID
+        changes on restart; that is logged as a warning. A corrupt identity
+        file fails startup instead of silently minting a different peer ID.
+        """
+        if self.seed:
+            self.identity_source = "seed"
+            logger.info(
+                "Using a deterministic identity from an explicit --seed "
+                "(the seed value is not logged)"
+            )
+            return create_new_key_pair(
+                seed=hashlib.sha256(self.seed.encode()).digest()
+            )
+
+        path = Path(self.identity_path) if self.identity_path else None
+        if path is not None and path.is_file():
+            try:
+                key_pair = load_identity(path)
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Stored peer identity is unreadable: {path} ({exc}). "
+                    "Restore it from backup, or delete it to create a new "
+                    "identity (this changes the peer ID other peers dial)."
+                ) from exc
+            self.identity_source = "persisted"
+            logger.info(f"Loaded persisted peer identity from {path}")
+            return key_pair
+
+        key_pair = create_new_ed25519_key_pair()
+        if path is None:
+            self.identity_source = "ephemeral"
+            logger.warning(
+                "No data directory configured; using an ephemeral peer "
+                "identity, so the peer ID will change on restart. Pass "
+                "--data-dir or set UC_DATA_DIR to keep it."
+            )
+            return key_pair
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _save_identity_atomically(key_pair, path)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not persist the peer identity at {path}: {exc}. "
+                "Choose a writable data directory with --data-dir or "
+                "UC_DATA_DIR."
+            ) from exc
+        self.identity_source = "created"
+        logger.info(f"Created a new peer identity at {path} (mode 0600)")
+        return key_pair
+
     async def _run_service(self):
         """Run the main service loop."""
-        secret = hashlib.sha256(self.seed.encode()).digest()
-        logger.info(f"Using deterministic Ed25519 key derived from seed='{self.seed}'")
-        key_pair = create_new_key_pair(seed=secret)
+        key_pair = self._load_identity()
 
         # Resolve bind vs advertised addresses before creating the host. The
         # listen list is verified after host.run() starts the listeners; the

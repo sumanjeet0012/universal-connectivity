@@ -104,6 +104,7 @@ class RuntimeConfig:
     listen_addrs: list[str] | None = None
     announce_addrs: list[str] | None = None
     storage_path: str | None = None
+    data_dir: str | None = None
 
     @classmethod
     def from_namespace(cls, args: Any) -> "RuntimeConfig":
@@ -120,10 +121,15 @@ class RuntimeConfig:
             listen_addrs=list(getattr(args, "listen_addrs", None) or []) or None,
             announce_addrs=list(getattr(args, "announce_addrs", None) or []) or None,
             storage_path=getattr(args, "storage_path", None) or None,
+            data_dir=getattr(args, "data_dir", None) or None,
         )
 
-    def service_kwargs(self) -> dict:
-        """Keyword arguments for ``HeadlessService``."""
+    def service_kwargs(self, *, identity_path: str | None = None) -> dict:
+        """Keyword arguments for ``HeadlessService``.
+
+        ``identity_path`` is injected by the runtime after the data directory
+        has been resolved; ``seed`` stays an explicit, deterministic override.
+        """
         return {
             "nickname": self.nickname,
             "port": self.port,
@@ -135,4 +141,5 @@ class RuntimeConfig:
             "announce_host": self.announce_host,
             "listen_addrs": self.listen_addrs,
             "announce_addrs": self.announce_addrs,
+            "identity_path": identity_path,
         }

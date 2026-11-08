@@ -63,7 +63,7 @@ Kivy, Textual, and CLI modes run with direct in-process access to the HeadlessSe
 - **Topic-Based Conversations** - Subscribe to and chat in multiple topics simultaneously
 - **WhatsApp-Style Interface** - Intuitive topic selector with unread message counts
 - **Dynamic Topic Management** - Add new topics on the fly without restarting
-- **Per-Topic Message Storage** - Messages organized by topic with read/unread tracking and optional SQLite persistence
+- **Per-Topic Message Storage** - Messages organized by topic with read/unread tracking, stored in a local SQLite database under the data directory
 - **Dynamic Peer Connection** - Connect to peers using their multiaddress through the UI
 - **One-Tap Copy** - Easy sharing of Peer ID and Multiaddr with clickable copy
 - **Message Filtering** - View messages only for the selected topic
@@ -305,7 +305,9 @@ python main.py --api-routes
 | `--listen-addr MULTIADDR` | Multiaddr to listen on (repeatable). Default `/ip4/0.0.0.0/tcp/<port>` | `--listen-addr /ip4/127.0.0.1/tcp/4001` |
 | `--announce-addr MULTIADDR` | Multiaddr advertised verbatim (repeatable). Overrides `--announce-host`; wildcard hosts are rejected | `--announce-addr /ip4/192.168.1.50/tcp/4001` |
 | `-t, --topic TOPIC` | Set custom default topic | `-t my-topic` |
-| `-s, --seed SEED` | Seed for deterministic peer ID | `-s 12345` |
+| `-s, --seed SEED` | Deterministic peer ID for development/testing (not written to disk). Default: a persisted random identity | `-s 12345` |
+| `--data-dir PATH` | Directory for identity, history, and logs (default `$UC_DATA_DIR`, else the platform data directory) | `--data-dir ./peer-data` |
+| `--storage-path PATH` | Override just the SQLite history file (`:memory:` for an ephemeral database) | `--storage-path ./data/history.db` |
 | `-v, --verbose` | Enable debug logging | `-v` |
 | `--no-strict-signing` | Allow unsigned messages | `--no-strict-signing` |
 | `--api` | Start Tornado REST + WebSocket API server | `--api` |
@@ -338,6 +340,10 @@ python main.py --kivy --nick Bob --connect /ip4/192.168.1.100/tcp/9095/p2p/QmXXX
 > python main.py --seed 2 --port 4002 --api --api-port 8766
 > # then connect to /ip4/127.0.0.1/tcp/4002/p2p/<seed-2-peer-id>
 > ```
+>
+> The default data directory holds **one** peer identity, so two peers that
+> share it also share a peer ID and history file. Give each peer its own
+> `--data-dir` (or use `--seed`) when running several on one machine.
 
 ### Addresses: listen vs advertised
 
@@ -418,7 +424,8 @@ Chat Screen
 - `/status` - Display connection status
 - `/multiaddr` - Show your multiaddress
 
-**Note:** Copy multiaddr from `system_messages.txt` file for sharing.
+**Note:** Copy the multiaddr from the system log at
+`<data-dir>/logs/system_messages.txt` for sharing.
 
 ### 3. Simple CLI Mode
 
@@ -486,19 +493,20 @@ Messages are stored per-topic with read/unread tracking:
 - Every message gets a stable `message_id`; a frame delivered twice is stored
   and shown once
 - History is capped at 1000 messages per topic
-- By default history lives in process memory and is lost on restart
+- History is written to `<data-dir>/history.db` and survives restarts
 
-To keep history across restarts, point the peer at a local SQLite file:
+To use a different database location (or keep history in memory only):
 
 ```bash
 python main.py --storage-path ./data/history.db
+python main.py --storage-path :memory:
 ```
 
 The database uses a versioned schema in WAL mode. It is a local store only: it
 does **not** deliver messages to peers that were offline, and it is not a
 network-wide history. Back up with
-`sqlite3 data/history.db ".backup 'backup.db'"` (or copy the file while the peer
-is stopped) and restore by replacing it while stopped.
+`sqlite3 <data-dir>/history.db ".backup 'backup.db'"` (or copy the file while
+the peer is stopped) and restore by replacing it while stopped.
 
 ### Tornado API Configuration
 
@@ -530,11 +538,51 @@ python build_vectorstore.py
 export GROQ_API_KEY=your_key_here
 ```
 
+### Data Directory
+
+Identity, message history, and logs live in one directory so they can be
+backed up, moved, or deleted together:
+
+```text
+<data-dir>/
+├── identity/peer.key          # private peer identity (mode 0600)
+├── history.db                 # SQLite message history
+└── logs/system_messages.txt   # rotating system log
+```
+
+The location is chosen at startup, first match wins:
+
+1. `--data-dir PATH`
+2. `UC_DATA_DIR` environment variable
+3. the platform data directory: `~/Library/Application Support/py-peer` on
+   macOS, `$XDG_DATA_HOME/py-peer` on Linux, `%LOCALAPPDATA%\py-peer` on
+   Windows
+
+```bash
+export UC_DATA_DIR=/var/lib/py-peer
+python main.py --api --nick Alice
+
+# or per run
+python main.py --api --nick Alice --data-dir ./peer-data
+```
+
+**Identity:** the first run creates a random Ed25519 key and reuses it on every
+later run, so the peer ID is stable across restarts and upgrades. Passing an
+explicit `--seed` instead derives a deterministic identity for that run and does
+not touch the key file (development/testing). Deleting `identity/peer.key`
+creates a new peer identity, which changes the peer ID that other peers dial.
+
+If the directory cannot be created or written, startup fails with a clear
+error naming the directory and the `UC_DATA_DIR` / `--data-dir` escape hatch —
+the peer never starts half-configured.
+
 ### Log Files
 
-- **`system_messages.txt`** - System events and connection logs
+- **`<data-dir>/logs/system_messages.txt`** - System events and connection logs
   - Format: `[HH:MM:SS] message`
+  - Rotates at 1 MB with 3 backups
   - Contains: startup, peer connections, errors, multiaddr
+- Nothing is written to the current working directory at runtime
 
 ## 🔧 Development
 
@@ -554,7 +602,6 @@ py-peer/
 ├── py-peer-frontend/    # React + Vite frontend
 ├── pyproject.toml      # Project configuration & dependencies
 ├── uv.lock            # Dependency lock file
-├── system_messages.txt # System logs
 └── README.md          # This file
 ```
 
@@ -644,7 +691,7 @@ pip install --force-reinstall kivy kivymd
 **4. Messages Not Appearing**
 - Check if you're subscribed to the correct topic
 - Verify peer connection in info dialog
-- Look for errors in system_messages.txt
+- Look for errors in `<data-dir>/logs/system_messages.txt`
 
 **5. Clipboard Copy Not Working (Kivy)**
 - Ensure clipboard permissions (mobile)
@@ -675,7 +722,7 @@ python main.py --kivy --nick DebugUser --verbose
 
 Check logs:
 ```bash
-tail -f system_messages.txt
+tail -f "${UC_DATA_DIR:-$HOME/Library/Application Support/py-peer}/logs/system_messages.txt"
 ```
 
 ### Network Testing
@@ -792,12 +839,12 @@ This project is part of the Universal Connectivity project. See LICENSE files fo
 For support and questions:
 - Create an issue in the [GitHub repository](https://github.com/sumanjeet0012/universal-connectivity)
 - Check the troubleshooting section above
-- Review the system logs in `system_messages.txt`
+- Review the system logs in `<data-dir>/logs/system_messages.txt`
 - Join our community discussions
 
 ## 🗺️ Roadmap
 
-- [ ] Message persistence across sessions
+- [x] Message persistence across sessions
 - [x] File sharing support (REST endpoints: share/download/upload)
 - [ ] Voice/video chat
 - [ ] End-to-end encryption

@@ -648,11 +648,11 @@ files, and an optional frontend build.
 
 | Data | Owner | Current storage | Survives restart? | Can be reconstructed? | Secrets? | Notes |
 |---|---|---|---|---|---|---|
-| Private peer identity | `_run_service` | Derived from `sha256(seed)` each launch | Only if same `--seed` used | Yes from seed | **Seed is logged at INFO** (`headless.py:188`) | Default seed `"py-peer"` is shared by all default peers → peer-ID collision |
-| Peer ID | libp2p host | Derived from key | Only with same seed | Yes | No | No persisted key file |
-| Chat messages | `app/storage` message repository | In-memory list by default; SQLite with `--storage-path` | **Only with `--storage-path`** | No | Maybe (message content) | Capped at 1000/topic (`MAX_TOPIC_MESSAGES`) |
-| Unread counts | message repository (`read` flag) | Derived from stored rows | **Only with `--storage-path`** | No | No | Recomputed from rows, so retention cannot desynchronise it |
-| Read flags | message repository (`read` flag) | In-memory / SQLite | **Only with `--storage-path`** | No | No | |
+| Private peer identity | `_run_service` | `DataPaths.identity_file` (`<data-dir>/identity/peer.key`, mode 0600) | **Yes** | Only by deleting the key | Key file is never logged | Created once on first run; an explicit `--seed` is deterministic per run and never written |
+| Peer ID | libp2p host | Derived from the persisted key | **Yes** | No | No | Stable across restarts; changes only if the key is deleted or `--seed` is used |
+| Chat messages | `app/storage` message repository | SQLite at `<data-dir>/history.db` (override with `--storage-path`, `:memory:` for ephemeral) | **Yes** | No | Maybe (message content) | Capped at 1000/topic (`MAX_TOPIC_MESSAGES`) |
+| Unread counts | message repository (`read` flag) | Derived from stored rows | **Yes** | No | No | Recomputed from rows, so retention cannot desynchronise it |
+| Read flags | message repository (`read` flag) | SQLite | **Yes** | No | No | |
 | Shared file metadata | `shared_files` | In-memory dict | **No** | No | Local paths held server-side | API hides `filepath` |
 | File blocks | Bitswap `MemoryBlockStore` | In-memory | **No** | No (unless re-shared from disk) | Maybe | Large files consume RAM |
 | Shared/downloaded files | `~/Downloads` | Filesystem | Yes | N/A | Maybe | Not under app data dir |
@@ -661,26 +661,33 @@ files, and an optional frontend build.
 | DHT application records | — | None | N/A | N/A | N/A | App does not store DHT records |
 | Pubsub mesh / connections | libp2p | In-memory | N/A | Yes | No | Ephemeral by design |
 | Topic subscriptions | `ChatRoom.subscriptions` | In-memory | **No** | No | No | Only CLI `--topic` survives via config |
-| System log | `chatroom.system_logger` | `system_messages.txt` in **CWD** | Yes | N/A | Possibly | Rotating: 1 MB × 3, created at import |
-| Application settings | CLI args + `.env` | CWD `.env` for Groq key | Yes if `.env` kept | N/A | `GROQ_API_KEY` | No `UC_*` config, no config file |
+| System log | `chatroom.system_logger` | `<data-dir>/logs/system_messages.txt` | **Yes** | N/A | Possibly | Rotating: 1 MB × 3; configured at startup, never in CWD |
+| Application settings | CLI args + `.env` | CWD `.env` for Groq key | Yes if `.env` kept | N/A | `GROQ_API_KEY` | `UC_DATA_DIR` selects the data root; still no config file |
 | RAG vector store | `rag_handler` | Package-relative `llm/codes/libp2p_vectorstore` | Read-only | Rebuildable | No | Path is inside source tree |
 | API credentials | Groq SDK | Environment | Depends on env | N/A | **Yes** | Never log it |
 
-### 7.1 Writable-path policy (current)
+### 7.1 Writable-path policy (Phase 4)
 
-- `system_messages.txt` → current working directory, at `chatroom` import time
-  (`chatroom.py:24-35`). Running from a different directory creates a new log
-  there.
-- `.env` → current working directory (`main.py:17-18`).
+One data root, resolved at startup by `app/paths.py` in this order:
+`--data-dir` → `UC_DATA_DIR` → `platformdirs.user_data_dir("py-peer",
+"universal-connectivity")`. Relative values resolve against the CWD; `~` is
+
+expanded. The runtime then creates the layout and writes a probe file before
+opening anything, so a bad path fails startup with one clear error.
+
+- Identity → `<data-dir>/identity/peer.key`, created once with mode 0600 and
+  written through a temp file plus rename (§11.1, §18).
+- Message history → `<data-dir>/history.db` (WAL, schema v1). `--storage-path`
+  overrides just the database; `:memory:` keeps it ephemeral.
+- System log → `<data-dir>/logs/system_messages.txt`, attached at runtime
+  startup (`chatroom.configure_system_log`), so importing `chatroom` no longer
+  creates a file in CWD.
+- `.env` → current working directory (`main.py:17-18`) for `GROQ_API_KEY`.
 - Downloads/uploads → `~/Downloads` (`headless.py:58,162-163`;
-  `api/files.py:178-188`).
-- Message history → process memory by default. With `--storage-path PATH` the
-  repository opens a local SQLite database at that path (Phase 3, §17). The
-  default data directory is still Phase 4.
+  `api/files.py:178-188`). Deliberately user-visible and already outside CWD;
+  unchanged by Phase 4.
 - Package source directory is used for the RAG vector store path
   (`rag_handler.py:21-23`), but it is read-only at runtime.
-- No `UC_DATA_DIR`, no platformdirs call, no permission hardening, no
-  writability preflight.
 
 ### 7.2 Delivery semantics
 
@@ -847,19 +854,22 @@ lifecycle teardown, and address configuration.
 
 ### 11.1 Identity migration risk (highest)
 
-The current peer ID is a pure function of `--seed`, with default `"py-peer"`.
-Moving to a persisted random key would change every user's peer ID and break
-existing dial addresses. The implementation brief explicitly says not to
-silently regenerate identity. Before Phase 4, choose and document one of:
+Before Phase 4 the peer ID was a pure function of `--seed`, defaulting to the
+shared literal `"py-peer"` — every default peer had the same ID. Phase 4 chose
+**explicit opt-in** (option 2 of the brief) and documented it:
 
-1. **One-time migration:** if a seed-derived identity exists, persist that key
-   to the new key store so the peer ID is preserved.
-2. **Explicit opt-in:** keep seeded identities for development and add a
-   separate persistent identity for production, with clear docs.
-3. **Break compatibility intentionally:** document the peer-ID change and
-   require users to re-share multiaddrs.
+1. An explicit `--seed` still yields a deterministic in-memory identity for
+   development and testing, and is never written to disk.
+2. Without `--seed`, the first run generates one random Ed25519 key and stores
+   it at `<data-dir>/identity/peer.key` (0600); later runs load it, so the peer
+   ID is stable across restarts.
 
-Do not choose this silently. Also stop logging the seed.
+Consequence: a user who previously relied on the implicit default seed gets a
+different peer ID once, and must re-share their multiaddr. This is deliberate
+(the shared default produced ID collisions) and recorded in §18; it is not a
+silent regeneration — the key is created once and then never rewritten. The
+seed value is no longer logged, and a corrupt key file fails startup instead of
+silently minting a new identity.
 
 ### 11.2 Address and deployment risk
 
@@ -990,17 +1000,22 @@ Define message/peer/settings repositories, message identity/dedupe, retention,
 and migration policy. Do not add a server database. Prefer SQLite with
 non-blocking access, versioned migrations, and backup/restore docs.
 
-### Phase 4 — Persistence and data directories
+### Phase 4 — Persistence and data directories (done — see §18)
 
-Likely touch points:
+Delivered:
 
-- Identity: use py-libp2p's `FileSystemKeyStore`/`auto_persist` (present in
-  0.8.1) or an explicit key store; migrate seeded identity deliberately.
-- Add `UC_DATA_DIR` and platformdirs-based defaults; move
-  `system_messages.txt`, database, identity, and file storage out of CWD.
-- Add writability/permission preflight and clear failure messages.
-- Tests: restart preserves peer ID/history; unwritable dir fails safely;
-  migration/backup/restore.
+- `app/paths.py`: `DataPaths.resolve` (`--data-dir` → `UC_DATA_DIR` →
+  platformdirs) plus `ensure_writable()`, which creates the layout and probes
+  it, raising `DataDirectoryError` with an actionable message.
+- Identity: the first unflagged run generates one random Ed25519 key and saves
+  it to `<data-dir>/identity/peer.key` (0600, temp file + rename); later runs
+  load it. An explicit `--seed` stays deterministic and is not persisted.
+- `system_messages.txt` moved to `<data-dir>/logs/` and is attached at runtime
+  startup instead of at import; the database defaults to `<data-dir>/history.db`.
+- Tests: `tests/test_paths.py` (29 tests) covers precedence, layout,
+  unwritable directories, identity create/reuse/corruption, log placement, and
+  runtime wiring. A two-process API run verified a stable peer ID and history
+  across a restart.
 
 ### Phase 5 — Remove Kivy from core
 
@@ -1385,8 +1400,8 @@ POST /api/v1/service/stop     -> graceful shutdown, process exit 0
 - **Kivy** still reads the shared engine directly; migrating it to services is
   Phase 6. No second host is created.
 - **StorageService** is a read-only facade over the repository. Phase 3 added
-  durable writes, identity/dedupe, and migrations (§17); choosing a default
-  data directory remains Phase 4.
+  durable writes, identity/dedupe, and migrations (§17); Phase 4 made the
+  default database `<data-dir>/history.db` (§18).
 - **ConnectionService.connect** only queues a dial (unchanged semantics);
   explicit disconnect is not implemented because no existing caller needs it.
 - **API trust boundary** remains local/unauthenticated; authorization belongs
@@ -1510,11 +1525,12 @@ downgrade.
 
 ### 17.9 Configuration and API surface
 
-- `--storage-path PATH` (all modes) selects durable storage; the help text says
-  the default is in-memory and lost on restart.
-- `GET /api/v1/service/config` now includes a `storage` block:
+- `--storage-path PATH` (all modes) overrides the database location; since
+  Phase 4 the default is `<data-dir>/history.db`, and `:memory:` is ephemeral.
+- `GET /api/v1/service/config` includes a `storage` block:
   `{backend, durable, schema_version, retention_per_topic, messages,
-  peer_records, settings}`.
+  peer_records, settings}` (Phase 4 adds `data_dir`, `identity_file`, and
+  `identity_source`).
 - Stored messages and history responses include `message_id`.
 
 ### 17.10 Verification
@@ -1541,11 +1557,136 @@ restart and that a duplicate frame is stored once.
 - [x] Storage works without a UI and without a server database.
 - [x] Schema is versioned; newer databases are refused; backup/restore documented.
 - [x] Service tests run against both backends without a real host.
-- [ ] Peer/settings repositories are implemented and tested but not yet wired
-  into services (Phase 4: identity persistence and preferences).
-- [ ] No default data directory or `UC_DATA_DIR` yet (Phase 4); durable storage
-  requires an explicit `--storage-path`.
+- [x] Default data directory and `UC_DATA_DIR` land in Phase 4 (§18).
+- [ ] Peer/settings repositories are implemented and tested but still not wired
+  into services: the identify cache is written from the networking loop (a
+  durable write there needs an off-loop flush and a cache-invalidation policy)
+  and no user preference is defined well enough to persist yet. Deferred, not
+  forgotten.
 - [ ] No offline delivery, acknowledgement, sync, message edit/delete, full-text
   search, or age-based retention.
 - Kivy still reads `get_topic_messages()` on the engine (Phase 6), which now
   delegates to the repository, so it sees the same data without a second store.
+
+## 18. Phase 4 — Persistence and data directories (implemented)
+
+**Status:** implemented and verified, 2026-11-08.
+**Baseline:** `fd123fb` (Phase 3).
+**Scope:** one data root for identity, history, and logs; a persisted identity
+with an explicit migration decision; a writability preflight. No new server
+component and no schema change (`SCHEMA_VERSION` stays 1).
+
+### 18.1 Layout and resolution
+
+| Data | Location | Notes |
+|---|---|---|
+| Private identity | `<data-dir>/identity/peer.key` | 0600, created once |
+| Message history | `<data-dir>/history.db` | SQLite, WAL, schema v1 |
+| System log | `<data-dir>/logs/system_messages.txt` | rotating 1 MB × 3 |
+
+`app.paths.DataPaths.resolve` picks the root once per process:
+
+1. `--data-dir PATH`
+2. `UC_DATA_DIR`
+3. `platformdirs.user_data_dir("py-peer", "universal-connectivity")`
+
+Relative values are anchored at the current working directory and `~` is
+expanded. `--storage-path` still overrides only the database (so an existing
+deployment keeps its history file where it was) and `:memory:` skips the
+database directory entirely.
+
+### 18.2 Writability preflight
+
+`DataPaths.ensure_writable()` creates the root, `identity/`, and `logs/`, then
+writes and removes a probe file in each required directory. Any `OSError`
+becomes `DataDirectoryError` (`data_directory_error`, HTTP 500) with the path
+and the `UC_DATA_DIR` / `--data-dir` remedy in the message. `ApplicationRuntime`
+calls it before constructing the store or the service, so an unwritable data
+directory fails the process at startup instead of failing a later key or SQLite
+write. This satisfies the "unwritable dir fails safely" acceptance item.
+
+### 18.3 Identity decision
+
+The pre-Phase-4 identity was `sha256(--seed)` with the shared default
+`"py-peer"`, i.e. every default peer had the same peer ID, and the seed was
+logged at INFO. Phase 4 resolves §11.1 with explicit opt-in:
+
+- `--seed` present → deterministic Ed25519 key, never written to disk. The
+  value is not logged (only the fact that a seed was used), so development
+  runs stay reproducible without leaking the input.
+- `--seed` absent and `identity/peer.key` exists → load it. This is the normal
+  restart path; the peer ID is stable even if a seed is later added or removed.
+- `--seed` absent and no key → generate one Ed25519 key and persist it with
+  `save_identity` into a temp file, `chmod 0600`, then `os.replace`, so a crash
+  never leaves a half-written key.
+- No `identity_path` (direct `HeadlessService` use in tests) → ephemeral key,
+  logged as a warning because the peer ID will change on restart.
+- Corrupt key file → startup fails with the path and the consequence (deleting
+  the file creates a new identity and peer ID). The peer never silently mints
+  a replacement identity.
+
+Compatibility consequence, stated in the README: a user who relied on the
+implicit default seed changes peer ID once and must re-share their multiaddr.
+That is the deliberate cost of removing the global default-ID collision.
+
+`GET /api/v1/service/config` reports `identity_source`
+(`created` / `persisted` / `seed` / `ephemeral`) and `identity_file`, so
+operators can confirm behaviour without reading the key.
+
+### 18.4 System log and default storage
+
+- `chatroom` no longer attaches a `RotatingFileHandler` at import. It exposes
+  `configure_system_log(path)`, which replaces any existing rotating handler
+  (idempotent), creates the parent directory, and falls back to a warning plus
+  no file sink if the handler cannot be created. `ApplicationRuntime` calls it
+  with `<data-dir>/logs/system_messages.txt`, so running from any directory no
+  longer drops a log in CWD.
+- `open_store` still receives `None` only when the caller wants memory storage.
+  The runtime now passes `<data-dir>/history.db` by default, which makes history
+  durable by default; `--storage-path :memory:` restores the ephemeral
+  behaviour.
+
+### 18.5 Concurrency and failure behaviour
+
+The identity file is read or written once on the trio thread before the host is
+created, so it never blocks message flow. `ensure_writable` runs on the
+constructing thread before any host exists. `configuration_snapshot` reads plain
+attributes and does not touch the key file. The store keeps its Phase 3 locking
+and off-loop append behaviour.
+
+### 18.6 Verification
+
+```
+.venv/bin/python -m unittest discover -s tests
+  -> Ran 140 tests ... OK
+     (111 after Phase 3 + 29 new in tests/test_paths.py)
+
+.venv/bin/python -m py_compile app/paths.py app/errors.py app/models.py \
+    app/runtime.py chatroom.py headless.py main.py
+  -> COMPILE_OK
+```
+
+Two-process API run, both processes started from a scratch CWD with
+`--data-dir <tmp>` and different ports:
+
+```
+run 1: identity_source "created",   peer_id 12D3KooWDeQ…Fce5, history [phase4-persisted], exit 0
+run 2: identity_source "persisted", peer_id 12D3KooWDeQ…Fce5, history [phase4-persisted], exit 0
+files: <data-dir>/{identity/peer.key (0600), history.db, logs/system_messages.txt}
+CWD:   only the scratch process logs; no system_messages.txt, history.db, or identity/
+```
+
+### 18.7 Acceptance and explicit exceptions
+
+- [x] Restart preserves the peer ID and message history.
+- [x] An unwritable data directory fails startup with a clear, actionable error.
+- [x] `UC_DATA_DIR` and `--data-dir` are documented with platform defaults.
+- [x] Identity, history, and the system log no longer depend on the CWD.
+- [x] The seed value is no longer logged.
+- [ ] Downloads/uploads stay in `~/Downloads` (already outside CWD and
+  user-visible); they are not moved under the data directory.
+- [ ] Peer/settings repositories remain unwired for the reasons in §17.11.
+- [ ] Two peers sharing one data directory share an identity and database; the
+  README tells multi-peer users to pass `--data-dir` or `--seed`.
+- [ ] The identity file is not encrypted at rest; protection is filesystem
+  permissions (0600) and the data directory's own permissions.
