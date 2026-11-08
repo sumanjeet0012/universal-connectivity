@@ -63,7 +63,7 @@ Kivy, Textual, and CLI modes run with direct in-process access to the HeadlessSe
 - **Topic-Based Conversations** - Subscribe to and chat in multiple topics simultaneously
 - **WhatsApp-Style Interface** - Intuitive topic selector with unread message counts
 - **Dynamic Topic Management** - Add new topics on the fly without restarting
-- **Per-Topic Message Storage** - Messages organized by topic with read/unread tracking
+- **Per-Topic Message Storage** - Messages organized by topic with read/unread tracking and optional SQLite persistence
 - **Dynamic Peer Connection** - Connect to peers using their multiaddress through the UI
 - **One-Tap Copy** - Easy sharing of Peer ID and Multiaddr with clickable copy
 - **Message Filtering** - View messages only for the selected topic
@@ -483,7 +483,22 @@ python main.py --kivy --nick Alice --topic my-custom-topic
 Messages are stored per-topic with read/unread tracking:
 - Unread messages appear in topic list
 - Opening a topic marks messages as read
-- Messages persist during session only
+- Every message gets a stable `message_id`; a frame delivered twice is stored
+  and shown once
+- History is capped at 1000 messages per topic
+- By default history lives in process memory and is lost on restart
+
+To keep history across restarts, point the peer at a local SQLite file:
+
+```bash
+python main.py --storage-path ./data/history.db
+```
+
+The database uses a versioned schema in WAL mode. It is a local store only: it
+does **not** deliver messages to peers that were offline, and it is not a
+network-wide history. Back up with
+`sqlite3 data/history.db ".backup 'backup.db'"` (or copy the file while the peer
+is stopped) and restore by replacing it while stopped.
 
 ### Tornado API Configuration
 

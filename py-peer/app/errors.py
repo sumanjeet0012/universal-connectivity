@@ -68,3 +68,10 @@ class UnsupportedOperationError(ApplicationError):
 
     code = "unsupported_operation"
     http_status = 501
+
+
+class StorageError(ApplicationError):
+    """The local storage backend failed to read or write."""
+
+    code = "storage_error"
+    http_status = 500

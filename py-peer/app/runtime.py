@@ -25,6 +25,7 @@ from .services import (
     PeerService,
     StorageService,
 )
+from .storage import MemoryStore, open_store
 
 logger = logging.getLogger("app.runtime")
 
@@ -32,7 +33,14 @@ logger = logging.getLogger("app.runtime")
 class ApplicationRuntime:
     """Own the peer host, services, and event bus for one application."""
 
-    def __init__(self, config: RuntimeConfig | None = None, *, service=None, event_bus=None):
+    def __init__(
+        self,
+        config: RuntimeConfig | None = None,
+        *,
+        service=None,
+        event_bus=None,
+        store=None,
+    ):
         if config is None and service is None:
             raise ValueError("ApplicationRuntime requires config= or service=")
         self.config = config
@@ -41,9 +49,19 @@ class ApplicationRuntime:
         if service is None:
             from headless import HeadlessService
 
-            self.service = HeadlessService(**config.service_kwargs())
+            self.store = store or open_store(config.storage_path)
+            self.service = HeadlessService(
+                **config.service_kwargs(), message_store=self.store
+            )
         else:
             self.service = service
+            existing = getattr(service, "message_store", None)
+            self.store = store or existing or MemoryStore()
+            if existing is not self.store:
+                try:
+                    service.message_store = self.store
+                except Exception:  # pragma: no cover - duck-typed test doubles
+                    logger.debug("Attached service does not accept a message store")
 
         # Event publication is additive: HeadlessService publishes to this bus
         # while existing queue consumers keep working during the migration.
@@ -52,7 +70,7 @@ class ApplicationRuntime:
         except Exception:  # pragma: no cover - duck-typed test doubles
             logger.debug("Attached service does not accept an event bus")
 
-        self.storage = StorageService(self.service)
+        self.storage = StorageService(self.service, self.store)
         self.peer = PeerService(self.service)
         self.connections = ConnectionService(self.service)
         self.messaging = MessagingService(self.service, self.storage)
@@ -125,8 +143,11 @@ class ApplicationRuntime:
             self._explicit_failure = True
             raise
         finally:
-            # Subscribers must not receive events after the runtime is gone.
+            # Subscribers must not receive events after the runtime is gone;
+            # closing the store here releases the SQLite file after the engine
+            # has finished writing (teardown runs on the same trio task).
             self.events.close()
+            self.store.close()
 
     def _thread_main(self) -> None:
         try:
@@ -247,6 +268,7 @@ class ApplicationRuntime:
             "connect_addrs": list(getattr(service, "connect_addrs", []) or []),
             "listen_addrs": list(getattr(service, "transport_addrs", []) or []),
             "announce_addrs": list(getattr(service, "full_multiaddrs", []) or []),
+            "storage": self.storage.health(),
         }
 
     # ------------------------------------------------------------------ #

@@ -414,6 +414,16 @@ def main():
         help="Custom topic to subscribe.",
     )
     parser.add_argument(
+        "--storage-path",
+        type=str,
+        default=None,
+        dest="storage_path",
+        metavar="PATH",
+        help="SQLite file for durable message history (default: in-memory, "
+             "which is lost on restart). Use :memory: for an ephemeral "
+             "SQLite database.",
+    )
+    parser.add_argument(
         "--api",
         action="store_true",
         help="Start Tornado REST + WebSocket API server (headless + API, no UI)"

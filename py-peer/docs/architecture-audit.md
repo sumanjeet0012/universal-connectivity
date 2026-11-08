@@ -1,6 +1,6 @@
-# Universal Connectivity py-peer — Architecture Audit (Phases 0–1)
+# Universal Connectivity py-peer — Architecture Audit (Phases 0–3)
 
-**Status:** Phase 0 and Phase 1 deliverables
+**Status:** Phase 0–3 deliverables
 **Audit date:** 2026-11-08
 **Repository:** `universal-connectivity` (`py-peer` is the subject of this audit)
 **Baseline revision:** `dcfbf07` plus the current uncommitted working tree; Phase 1
@@ -650,9 +650,9 @@ files, and an optional frontend build.
 |---|---|---|---|---|---|---|
 | Private peer identity | `_run_service` | Derived from `sha256(seed)` each launch | Only if same `--seed` used | Yes from seed | **Seed is logged at INFO** (`headless.py:188`) | Default seed `"py-peer"` is shared by all default peers → peer-ID collision |
 | Peer ID | libp2p host | Derived from key | Only with same seed | Yes | No | No persisted key file |
-| Chat messages | `HeadlessService.topic_messages` | In-memory list | **No** | No | Maybe (message content) | Capped at 1000/topic (`MAX_TOPIC_MESSAGES`) |
-| Unread counts | `topic_unread_counts` | In-memory dict | **No** | No | No | Reset on restart |
-| Read flags | message dicts | In-memory | **No** | No | No | |
+| Chat messages | `app/storage` message repository | In-memory list by default; SQLite with `--storage-path` | **Only with `--storage-path`** | No | Maybe (message content) | Capped at 1000/topic (`MAX_TOPIC_MESSAGES`) |
+| Unread counts | message repository (`read` flag) | Derived from stored rows | **Only with `--storage-path`** | No | No | Recomputed from rows, so retention cannot desynchronise it |
+| Read flags | message repository (`read` flag) | In-memory / SQLite | **Only with `--storage-path`** | No | No | |
 | Shared file metadata | `shared_files` | In-memory dict | **No** | No | Local paths held server-side | API hides `filepath` |
 | File blocks | Bitswap `MemoryBlockStore` | In-memory | **No** | No (unless re-shared from disk) | Maybe | Large files consume RAM |
 | Shared/downloaded files | `~/Downloads` | Filesystem | Yes | N/A | Maybe | Not under app data dir |
@@ -674,6 +674,9 @@ files, and an optional frontend build.
 - `.env` → current working directory (`main.py:17-18`).
 - Downloads/uploads → `~/Downloads` (`headless.py:58,162-163`;
   `api/files.py:178-188`).
+- Message history → process memory by default. With `--storage-path PATH` the
+  repository opens a local SQLite database at that path (Phase 3, §17). The
+  default data directory is still Phase 4.
 - Package source directory is used for the RAG vector store path
   (`rag_handler.py:21-23`), but it is read-only at runtime.
 - No `UC_DATA_DIR`, no platformdirs call, no permission hardening, no
@@ -827,7 +830,9 @@ before Phase 1). Remaining gaps:
 - No test covers the Tornado API handlers end-to-end.
 - No test covers the Textual/Kivy adapters or React UI.
 - No test covers identity persistence (there is none).
-- No test covers data-directory behaviour (there is none).
+- No test covers data-directory behaviour (there is none; Phase 4).
+  *Phase 3 update: `tests/test_storage.py` covers persistence, dedupe,
+  retention, schema migrations, backup-safe reopen, and engine integration.*
 - No test covers signal delivery (the lifecycle tests cover `request_stop()`).
 - No test covers packaging contents or installed console-script behaviour.
 - No py-peer CI workflow runs any of these checks.
@@ -877,9 +882,13 @@ verified (§15). Residual risk:
 
 ### 11.3 Storage migration risk
 
-There is no existing database to migrate, but message history is currently lost
-on restart. Adding SQLite must not imply network-wide offline delivery. Phase 3
-must define message identity, dedupe, retention, and delivery semantics.
+Resolved by Phase 3 (§17): messages have a stable identity, dedupe, a per-topic
+retention bound, and a versioned SQLite schema. There is no existing database to
+migrate, so migration risk is limited to refusing a database written by a newer
+build.
+
+Storage remains local retention only. It must not be described as network-wide
+offline delivery: there is still no acknowledgement, mailbox, or sync.
 
 ### 11.4 Lifecycle risk
 
@@ -975,7 +984,7 @@ Likely touch points:
 - Tests: service-level tests with fake/in-memory dependencies; one operation
   exercised directly and through the HTTP adapter.
 
-### Phase 3 — Storage design
+### Phase 3 — Storage design (done — see §17)
 
 Define message/peer/settings repositories, message identity/dedupe, retention,
 and migration policy. Do not add a server database. Prefer SQLite with
@@ -1277,7 +1286,8 @@ working.
 | `app/services/discovery.py` | topics, mesh/fanout, pubsub, DHT queries, bootstrap |
 | `app/services/identity.py` | cached identify metadata and public keys (never private keys) |
 | `app/services/files.py` | share/download/upload with download-directory containment |
-| `app/services/storage.py` | paginated in-memory history (Phase 3 replaces the backend) |
+| `app/services/storage.py` | paginated history over the storage repository |
+| `app/storage/` | message repository (memory/SQLite), peer + settings repositories, schema v1 migrations |
 
 No module under `app/` imports Tornado, Textual, Kivy, or MCP. Services return
 dataclasses/dicts and raise `ApplicationError` subclasses.
@@ -1374,10 +1384,168 @@ POST /api/v1/service/stop     -> graceful shutdown, process exit 0
 
 - **Kivy** still reads the shared engine directly; migrating it to services is
   Phase 6. No second host is created.
-- **StorageService** is a read-only facade over in-memory history; durable
-  writes, dedupe, and data directories are Phase 3/4.
+- **StorageService** is a read-only facade over the repository. Phase 3 added
+  durable writes, identity/dedupe, and migrations (§17); choosing a default
+  data directory remains Phase 4.
 - **ConnectionService.connect** only queues a dial (unchanged semantics);
   explicit disconnect is not implemented because no existing caller needs it.
 - **API trust boundary** remains local/unauthenticated; authorization belongs
   with the future remote/MCP adapter.
 - Non-TCP transports stay disabled per §15.
+
+## 17. Phase 3 — Storage design (implemented)
+
+**Status:** implemented and verified, 2026-11-08.
+**Baseline:** `7678a69` (Phase 2) plus the working tree described here.
+**Scope:** one local message repository, stable message identity, dedupe,
+bounded retention, versioned schema, backup/restore guidance. No server
+database and no offline delivery.
+
+### 17.1 Package layout
+
+| Module | Responsibility |
+|---|---|
+| `app/storage/__init__.py` | `open_store(path)`, `MemoryStore`, `SqliteStore`, health, connection lifecycle |
+| `app/storage/messages.py` | `message_identity`, normalisation, `InMemoryMessageStore`, `SqliteMessageStore` |
+| `app/storage/repositories.py` | peer metadata and settings repositories (memory/SQLite); schema is ready, services consume them in Phase 4 |
+| `app/storage/schema.py` | `SCHEMA_VERSION` and ordered migrations via `PRAGMA user_version` |
+
+`HeadlessService` now stores through `message_store` instead of owning
+`topic_messages`/`topic_unread_counts`. `ApplicationRuntime` constructs the
+store once and injects the same instance into the engine and `StorageService`.
+
+### 17.2 Backend selection
+
+| Mode | Flag | Backend | Survives restart |
+|---|---|---|---|
+| Default | none | in-memory (`MemoryStore`) | No — behaviour unchanged from Phase 2 |
+| Durable | `--storage-path PATH` | SQLite file (`SqliteStore`) | Yes |
+| Ephemeral SQLite | `--storage-path :memory:` | SQLite, process-lifetime | No |
+
+`open_store(path)` creates parent directories, opens the database, applies
+pending migrations, and fails with `StorageError` (startup error, non-zero
+exit) when the path cannot be opened or migrated. The store is closed in
+`ApplicationRuntime.start()`'s `finally` block after the engine stops;
+`close()` is idempotent.
+
+### 17.3 Message identity and dedupe
+
+- Identity is `sha256(topic \x00 sender_id \x00 timestamp \x00 content)`.
+  An explicit `message_id` on the input is preserved instead.
+- The id is the primary key, so a redelivered GossipSub frame is rejected by
+  `INSERT OR IGNORE`. Duplicates are dropped before UI/WebSocket fan-out, so a
+  message is stored, queued, and streamed once.
+- The same text sent at a different timestamp is a different message.
+- Own messages (the GossipSub echo) are stored with `read=1`, so they never
+  increment the local unread badge.
+- The id is included in the stored row, API history responses, and WebSocket
+  payloads, which gives clients a stable key for de-duplication.
+
+### 17.4 Retention
+
+- Per-topic cap: `MAX_TOPIC_MESSAGES` (1000) enforced by the engine on every
+  append; the repository also has a default cap validated to 1–100000.
+- Trimming deletes the oldest rows in the same transaction as the insert.
+- Unread counts are computed from stored rows (`read = 0`), so trimming cannot
+  desynchronise the badge from the history.
+- Retention is count-based only. There is no age-based expiry, export, or
+  per-topic override yet.
+
+### 17.5 Schema and migrations
+
+Schema v1 (`PRAGMA user_version = 1`):
+
+- `messages(id PK, topic, sender_id, sender_nick, content, kind, timestamp,
+  received_at, read, file_cid, file_name, file_size)` with an index on `topic`.
+- `peers(peer_id PK, public_key, protocol_version, agent_version, protocols,
+  listen_addrs, updated_at)`.
+- `settings(key PK, value, updated_at)`.
+
+Migrations are applied in order inside a transaction. A database whose
+`user_version` is newer than the build's `SCHEMA_VERSION` is refused with a
+clear error instead of being modified. There is no down-migration: restoring a
+backup is the rollback path.
+
+### 17.6 Concurrency and failure behaviour
+
+- One SQLite connection, guarded by an `RLock`, opened with
+  `check_same_thread=False`; WAL, `synchronous=NORMAL`, and a 5 s busy timeout
+  keep the Tornado reader thread from blocking the writer.
+- Durable appends run on a worker thread (`trio.to_thread.run_sync`), so disk
+  latency never blocks the networking loop. In-memory appends stay inline.
+- A storage failure is logged and reported as a system message; the live
+  message is still delivered to the UI/WebSocket clients and the node keeps
+  running.
+- No transaction spans a network operation; each append is one INSERT plus one
+  retention DELETE.
+
+### 17.7 Delivery semantics (unchanged)
+
+Storage is **local retention of messages this peer observed**. It is not an
+acknowledgement, mailbox, offline delivery, or multi-device sync. A peer that
+was offline never receives missed messages by starting with a database. Do not
+describe the feature as "offline chat history".
+
+### 17.8 Backup and restore
+
+Stop the peer, then copy the file (WAL means a live copy must include the
+`-wal`/`-shm` siblings, or use the safe online backup):
+
+```bash
+# preferred: consistent copy even while running
+sqlite3 data/history.db ".backup 'backup.db'"
+
+# or with the peer stopped
+cp data/history.db backup.db
+
+# inspect
+sqlite3 data/history.db "SELECT COUNT(*) FROM messages;"
+sqlite3 data/history.db "PRAGMA user_version;"
+```
+
+Restore by stopping the peer, replacing the database file, and restarting.
+Restoring an older `user_version` is safe: pending migrations run on open.
+Restoring a newer `user_version` is refused, which protects the file from a
+downgrade.
+
+### 17.9 Configuration and API surface
+
+- `--storage-path PATH` (all modes) selects durable storage; the help text says
+  the default is in-memory and lost on restart.
+- `GET /api/v1/service/config` now includes a `storage` block:
+  `{backend, durable, schema_version, retention_per_topic, messages,
+  peer_records, settings}`.
+- Stored messages and history responses include `message_id`.
+
+### 17.10 Verification
+
+```
+.venv/bin/python -m unittest discover -s tests
+  -> Ran 111 tests ... OK
+     (82 after Phase 2 + 29 new in tests/test_storage.py)
+
+.venv/bin/python -m py_compile main.py headless.py app/storage/*.py \
+    app/services/storage.py app/runtime.py app/models.py tests/test_storage.py
+  -> COMPILE_OK
+```
+
+Two-process API run with the same `--storage-path` (send a message, stop,
+restart, read history) verified that the message and its `message_id` survive a
+restart and that a duplicate frame is stored once.
+
+### 17.11 Acceptance and explicit exceptions
+
+- [x] Message identity is stable and documented.
+- [x] Redelivery is deduplicated before storage and fan-out.
+- [x] Retention is bounded and enforced transactionally.
+- [x] Storage works without a UI and without a server database.
+- [x] Schema is versioned; newer databases are refused; backup/restore documented.
+- [x] Service tests run against both backends without a real host.
+- [ ] Peer/settings repositories are implemented and tested but not yet wired
+  into services (Phase 4: identity persistence and preferences).
+- [ ] No default data directory or `UC_DATA_DIR` yet (Phase 4); durable storage
+  requires an explicit `--storage-path`.
+- [ ] No offline delivery, acknowledgement, sync, message edit/delete, full-text
+  search, or age-based retention.
+- Kivy still reads `get_topic_messages()` on the engine (Phase 6), which now
+  delegates to the repository, so it sees the same data without a second store.

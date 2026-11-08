@@ -430,6 +430,11 @@ curl -X POST http://localhost:8765/api/v1/messages \
 
 Returns stored messages for a topic. Supports pagination with `limit` and `offset` query params.
 
+History is kept in process memory by default and is lost on restart. Start the
+peer with `--storage-path PATH` to retain it in a local SQLite file. This is
+local retention only — the API never returns messages a peer missed while
+offline.
+
 **Request:**
 ```bash
 curl "http://localhost:8765/api/v1/messages/universal-connectivity?limit=50&offset=0"
@@ -449,6 +454,7 @@ curl "http://localhost:8765/api/v1/messages/universal-connectivity?limit=50&offs
     "topic": "universal-connectivity",
     "messages": [
       {
+        "message_id": "878b2f889b1eb9da529655d86e8edd1cfb101b8cd2d181021280a508bc506696",
         "type": "chat_message",
         "message": "Hello from Tornado API!",
         "sender_nick": "alice",
@@ -471,6 +477,7 @@ Each message object fields:
 
 | Field | Description |
 |---|---|
+| `message_id` | Stable id derived from topic, sender, timestamp, and text; redelivered frames are stored once |
 | `type` | `"chat_message"` or `"file_message"` |
 | `message` | Message text |
 | `sender_nick` | Display name of the sender |
@@ -1248,7 +1255,18 @@ curl http://localhost:8765/api/v1/service/config
     "topic": null,
     "strict_signing": false,
     "download_dir": "/Users/alice/Downloads",
-    "connect_addrs": []
+    "connect_addrs": [],
+    "listen_addrs": ["/ip4/0.0.0.0/tcp/54770"],
+    "announce_addrs": ["/ip4/127.0.0.1/tcp/54770/p2p/12D3KooW..."],
+    "storage": {
+      "backend": "sqlite",
+      "durable": true,
+      "schema_version": 1,
+      "retention_per_topic": 1000,
+      "messages": 12,
+      "peer_records": 0,
+      "settings": 0
+    }
   },
   "error": null,
   "timestamp": 1772532115.19
@@ -1270,7 +1288,7 @@ curl -X POST http://localhost:8765/api/v1/service/stop
 ```json
 {
   "success": true,
-  "data": { "message": "Stop signal sent to HeadlessService." },
+  "data": { "message": "Stop signal sent to the application runtime." },
   "error": null,
   "timestamp": 1772532115.19
 }

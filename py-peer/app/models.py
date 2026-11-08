@@ -103,6 +103,7 @@ class RuntimeConfig:
     announce_host: str = "127.0.0.1"
     listen_addrs: list[str] | None = None
     announce_addrs: list[str] | None = None
+    storage_path: str | None = None
 
     @classmethod
     def from_namespace(cls, args: Any) -> "RuntimeConfig":
@@ -118,6 +119,7 @@ class RuntimeConfig:
             announce_host=getattr(args, "announce_host", "127.0.0.1"),
             listen_addrs=list(getattr(args, "listen_addrs", None) or []) or None,
             announce_addrs=list(getattr(args, "announce_addrs", None) or []) or None,
+            storage_path=getattr(args, "storage_path", None) or None,
         )
 
     def service_kwargs(self) -> dict:

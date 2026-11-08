@@ -8,6 +8,7 @@ without any UI. It communicates with the UI through queues and events.
 import json
 import ipaddress
 import errno
+import functools
 import logging
 import os
 import socket
@@ -50,6 +51,7 @@ from chatroom import (
     MAX_TOPIC_NAME_LENGTH,
     MAX_TOPICS,
 )
+from app.storage import InMemoryMessageStore, message_identity
 from libp2p.bitswap import BitswapClient, MemoryBlockStore
 from libp2p.bitswap.dag import MerkleDag
 from libp2p.network.config import ConnectionConfig
@@ -110,7 +112,7 @@ class HeadlessService:
     Headless service that manages libp2p components and provides data to UI through queues.
     """
 
-    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1", listen_addrs: List[str] = None, announce_addrs: List[str] = None, event_bus=None):
+    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1", listen_addrs: List[str] = None, announce_addrs: List[str] = None, message_store=None, event_bus=None):
         self.nickname = nickname
         self.port = port if port != 0 else 4001
         self.connect_addrs = connect_addrs or []
@@ -172,9 +174,10 @@ class HeadlessService:
         self.message_subscribers = set()
         self.system_subscribers = set()
         
-        # Per-topic message storage
-        self.topic_messages = {}  # {topic: [{'message': msg, 'timestamp': ts, 'read': bool}]}
-        self.topic_unread_counts = {}  # {topic: int}
+        # Per-topic message storage. Stable identity, dedupe, and retention
+        # live in the repository so the same code path serves the default
+        # in-memory store and a durable SQLite store (injected by the runtime).
+        self.message_store = message_store or InMemoryMessageStore()
         
         # File sharing state
         self.shared_files = {}  # {cid_hex: {'filename': str, 'filesize': int, 'filepath': str}}
@@ -931,31 +934,15 @@ class HeadlessService:
                     'read': is_own_message
                 }
             
-            # Store the message and enforce a fixed history bound. The lock
-            # keeps API reads (Tornado thread) from iterating while the trio
-            # thread appends/trims, and makes the unread-counter adjustment
-            # atomic with the trim.
-            with self._state_lock:
-                messages = self.topic_messages.get(topic)
-                if messages is None:
-                    messages = []
-                    self.topic_messages[topic] = messages
-                    self.topic_unread_counts[topic] = 0
-                messages.append(message_data)
-                if not is_own_message:
-                    self.topic_unread_counts[topic] += 1
-
-                overflow = len(messages) - MAX_TOPIC_MESSAGES
-                if overflow > 0:
-                    removed = messages[:overflow]
-                    del messages[:overflow]
-                    if not is_own_message:
-                        removed_unread = sum(
-                            1 for m in removed if not m.get("read", False)
-                        )
-                        self.topic_unread_counts[topic] = max(
-                            0, self.topic_unread_counts[topic] - removed_unread
-                        )
+            # Give the message its stable id before it reaches the repository,
+            # so the stored row and the payload sent to UI/API agree. The
+            # repository rejects an id it already holds: GossipSub can deliver
+            # the same frame twice (including our own echo), and showing it
+            # twice is the bug this dedupe exists to prevent.
+            message_data.setdefault('message_id', message_identity(message_data))
+            if not await self._store_message(message_data):
+                logger.debug("Dropping duplicate message %s", message_data['message_id'])
+                return
             
             # Log in simplified format only if not in UI mode
             if not self.ui_mode:
@@ -975,6 +962,27 @@ class HeadlessService:
             logger.error(f"Error handling chat message: {e}")
             logger.exception("Full traceback:")
     
+    async def _store_message(self, message_data: Dict[str, Any]) -> bool:
+        """Persist a message, keeping slow disk I/O off the networking loop.
+
+        Durable stores run the repository call on a worker thread. A storage
+        failure must not take down the node or hide a live message, so it is
+        reported as a system message and delivery continues.
+        """
+        store = self.message_store
+        try:
+            if getattr(store, "durable", False):
+                return await trio.to_thread.run_sync(
+                    functools.partial(
+                        store.append, message_data, keep=MAX_TOPIC_MESSAGES
+                    )
+                )
+            return store.append(message_data, keep=MAX_TOPIC_MESSAGES)
+        except Exception as exc:
+            logger.error(f"Failed to store chat message: {exc}")
+            await self._send_system_message("Failed to persist a chat message.")
+            return True
+
     def _publish_event(self, event_type, data: Dict[str, Any]) -> None:
         """Publish an application event without ever blocking the trio loop.
 
@@ -1202,7 +1210,7 @@ class HeadlessService:
                                 if success:
                                     logger.info(f"✅ File shared to topic '{topic}': {filename}")
                                     
-                                    # Don't store in topic_messages here - the pubsub echo
+                                    # Don't store the message here - the pubsub echo
                                     # will come back through _handle_chat_message and store it.
                                     # Only notify the UI immediately so it shows the bubble.
                                     payload = {
@@ -1688,8 +1696,10 @@ class HeadlessService:
             List of message dictionaries (a snapshot, safe to serialize while
             the trio thread appends to the live history).
         """
-        with self._state_lock:
-            return list(self.topic_messages.get(topic, []))
+        messages, _total = self.message_store.page(
+            topic, limit=min(MAX_TOPIC_MESSAGES, 1000), offset=0
+        )
+        return messages
     
     def get_all_topics_with_info(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -1701,23 +1711,10 @@ class HeadlessService:
             - total_count: Total number of messages
             - last_message: Most recent message (if any)
         """
-        result = {}
-        subscribed_topics = self.get_subscribed_topics()
-
-        with self._state_lock:
-            for topic in subscribed_topics:
-                messages = self.topic_messages.get(topic, [])
-                unread_count = self.topic_unread_counts.get(topic, 0)
-
-                result[topic] = {
-                    'unread_count': unread_count,
-                    'total_count': len(messages),
-                    # Copy so later read-flag updates cannot mutate the object
-                    # while Tornado is JSON-encoding it.
-                    'last_message': dict(messages[-1]) if messages else None,
-                }
-        
-        return result
+        return {
+            topic: self.message_store.stats(topic)
+            for topic in self.get_subscribed_topics()
+        }
     
     def mark_topic_as_read(self, topic: str):
         """
@@ -1726,12 +1723,9 @@ class HeadlessService:
         Args:
             topic: The topic name
         """
-        with self._state_lock:
-            if topic in self.topic_messages:
-                for message in self.topic_messages[topic]:
-                    message['read'] = True
-                self.topic_unread_counts[topic] = 0
-                logger.debug(f"Marked all messages in topic '{topic}' as read")
+        marked = self.message_store.mark_read(topic)
+        if marked:
+            logger.debug(f"Marked {marked} messages in topic '{topic}' as read")
     
     def get_unread_count(self, topic: str) -> int:
         """
@@ -1743,8 +1737,7 @@ class HeadlessService:
         Returns:
             Number of unread messages
         """
-        with self._state_lock:
-            return self.topic_unread_counts.get(topic, 0)
+        return self.message_store.unread_count(topic)
     
     def get_outgoing_queue(self):
         """Get the outgoing queue for UI to send messages."""

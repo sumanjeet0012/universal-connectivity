@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from app.errors import ConflictError, NotFoundError, NotReadyError, ValidationError
+from app.storage import MemoryStore
 from app.services import (
     DiscoveryService,
     FileService,
@@ -39,6 +40,17 @@ class _FakeEngine:
         self.connected_peers = set()
         self.sent = []
         self.subscribed = {"universal-connectivity"}
+        self.message_store = MemoryStore()
+        for index in range(5):
+            self.message_store.append(
+                {
+                    "message": f"m{index}",
+                    "sender_id": "peer-remote",
+                    "sender_nick": "Remote",
+                    "topic": "universal-connectivity",
+                    "timestamp": 1000.0 + index,
+                }
+            )
 
     # --- state ---------------------------------------------------------
     def get_connection_info(self):
