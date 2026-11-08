@@ -1,6 +1,6 @@
-# Universal Connectivity py-peer — Architecture Audit (Phases 0–5)
+# Universal Connectivity py-peer — Architecture Audit (Phases 0–6)
 
-**Status:** Phase 0–5 deliverables
+**Status:** Phase 0–6 deliverables
 **Audit date:** 2026-11-08
 **Repository:** `universal-connectivity` (`py-peer` is the subject of this audit)
 **Baseline revision:** `dcfbf07` plus the current uncommitted working tree; Phase 1
@@ -1778,3 +1778,107 @@ grep -ri kivy README.md pyproject.toml uv.lock *.py api app
   and a separate decision; removing Kivy alone does not produce a mobile build.
 - [ ] There is no CI workflow, so the removal test runs locally only.
 
+## 20. Phase 6 — UI audit and adapter integration (implemented)
+
+**Status:** implemented and verified, 2026-11-08.
+**Baseline:** `e0653f9` (Phase 5 Kivy removal).
+**Scope:** every remaining interface uses the shared runtime and event model;
+no adapter owns networking logic or creates a second host.
+
+### 20.1 Interface inventory
+
+| Interface | Entry point | Process / loop | Host owner | Events and status |
+|---|---|---|---|---|
+| Textual TUI | `python main.py --ui` → `ui.ChatUI` | Main thread (Textual/asyncio); runtime on a daemon trio thread | `ApplicationRuntime` | Subscribes to `EventBus` (`message_received`, `system`, `peer_connected`, `peer_disconnected`); reads `runtime.peer` for status |
+| Simple CLI | `python main.py` → `main_async` | One trio loop | `ApplicationRuntime` | Subscribes to `EventBus` for messages/system events; reads `runtime.peer` |
+| HTTP API | `python main.py --api` → `TornadoServer` | Tornado/asyncio main thread; runtime on a daemon trio thread | `ApplicationRuntime` | Handlers call runtime services; WebSockets subscribe to `EventBus` |
+| React frontend | `py-peer-frontend` (Vite) | Separate browser process | Backend `ApplicationRuntime` | REST + WebSockets; reconnects automatically after backend loss |
+| Headless | `python main.py --headless` | One trio loop | `ApplicationRuntime` | Logs plus `GET /api/v1/service/status` when the API is also enabled |
+| Route listing | `python main.py --api-routes` | Main thread, exits | None | Static route table only |
+
+No interface calls `new_host` or constructs a `HeadlessService`; the only host
+construction site remains `headless.py:_run_service`.
+
+### 20.2 Textual and CLI event integration
+
+Both adapters now consume the runtime `EventBus` instead of the legacy janus
+queues:
+
+- `ChatUI` subscribes once with a type filter (`MESSAGE_RECEIVED`, `SYSTEM`,
+  `PEER_CONNECTED`, `PEER_DISCONNECTED`), drains the bounded queue on a 0.1 s
+  interval, and unsubscribes in `on_unmount`.
+- `monitor_runtime_events` does the same for the simple CLI, with a
+  `finally` that unsubscribes when the runtime stops.
+- The legacy queues remain available for embedders, but adapters consume
+  exactly one source; the TUI's fallback only runs when no event bus exists,
+  so messages are not duplicated.
+- `ApplicationError` is translated into a UI/CLI message rather than a crash.
+
+### 20.3 Runtime modes and host ownership
+
+The CLI modes are mutually exclusive (`--api`, `--ui`, `--headless`, or the
+default simple CLI). Each mode calls `build_runtime(args)` exactly once and
+either awaits `runtime.start()` or calls `runtime.start_in_thread()`.
+Shutdown always goes through `runtime.request_stop()`, `join()`, and `close()`;
+the API adapter also stops the IOLoop when the runtime stops.
+
+The Textual import is lazy (inside the `--ui` branch), so headless, CLI, and
+API modes import and run without a TUI framework. A subprocess test blocks
+`textual` at import time and imports `main`, `headless`, `chatroom`,
+`tornado_server`, `api.base`, `app.runtime`, and `app.paths`.
+
+### 20.4 API trust boundary
+
+The API has no authentication and wildcard CORS, so it now binds to
+`127.0.0.1` by default (`--api-host`). Binding any other address logs a
+warning; exposing the API safely requires an authenticating reverse proxy and
+an origin policy. This is documented in `README.md` and `API_REFERENCE.md`.
+
+### 20.5 React recovery
+
+The frontend retries the initial REST load every 3 s instead of stopping on the
+first failure, reconnects the message/peer WebSockets after 3 s, and switches
+back to the boot screen with a retry message when polling loses the backend.
+A successful poll clears the error and restores the chat without a reload.
+
+### 20.6 Verification
+
+```
+.venv/bin/python -m unittest discover -s tests
+  -> Ran 154 tests ... OK
+     (145 after Phase 5 + 9 in tests/test_ui_adapters.py and
+      tests/test_api_security.py)
+
+.venv/bin/python -m py_compile main.py ui.py tornado_server.py api/*.py app/*.py
+  -> COMPILE_OK
+
+cd py-peer-frontend && npm run build
+  -> tsc + vite build OK
+cd py-peer-frontend && npm run lint
+  -> 0 errors (1 pre-existing react-refresh warning)
+
+python main.py --api --nick smoke6 --port 0 --api-port <ephemeral>
+  GET  /api/v1/node/status -> ready, loopback listener
+  POST /api/v1/messages    -> 202 queued
+  POST /api/v1/service/stop -> clean exit 0
+```
+
+### 20.7 Acceptance criteria (brief §10.3)
+
+- [x] Every UI and entry point is documented (§20.1, README).
+- [x] Every UI calls the same application services or the defined API.
+- [x] No UI contains duplicated networking/business logic.
+- [x] Only the runtime owner creates the peer host.
+- [x] Headless mode works without UI framework imports.
+- [x] React recovers from backend disconnection (REST retry + WS reconnect).
+- [x] UI subscription teardown and API shutdown behavior are tested
+  (`tests/test_ui_adapters.py`, existing lifecycle tests, API smoke run).
+- [x] API security, CORS, and origin behavior are documented.
+- [x] The service contracts are framework-independent and ready for a future
+  MCP adapter (MCP itself is out of scope).
+- [ ] No automated browser test drives the React UI; recovery is implemented
+  and builds/lints, but is not exercised end-to-end in CI.
+- [ ] No automated test renders the Textual TUI; tests cover its event
+  subscription, dispatch, and teardown.
+- [ ] The API remains unauthenticated when explicitly exposed; authentication
+  is a future adapter/security phase.

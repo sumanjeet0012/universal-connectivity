@@ -43,6 +43,11 @@ from rag_handler import AskHandler, load_vectorstore
 logger = logging.getLogger("tornado_server")
 
 DEFAULT_API_PORT = 8765
+# The API has no authentication and allows all origins. It is therefore a
+# trusted-local interface by default; exposing it on the LAN requires an
+# explicit --api-host 0.0.0.0 (and an external access-control layer).
+DEFAULT_API_HOST = "127.0.0.1"
+
 
 
 def _make_app(runtime, vectorstore=None) -> tornado.web.Application:
@@ -134,14 +139,18 @@ class TornadoServer:
         The shared runtime (or a bare HeadlessService, which is wrapped once).
     port : int
         HTTP port to listen on (default 8765).
+    host : str
+        Interface to bind. Defaults to loopback because the API is
+        unauthenticated; pass ``0.0.0.0`` only behind a trusted boundary.
     """
 
-    def __init__(self, runtime, port: int = DEFAULT_API_PORT):
+    def __init__(self, runtime, port: int = DEFAULT_API_PORT, host: str = DEFAULT_API_HOST):
         from api.base import as_runtime
 
         self.runtime = as_runtime(runtime)
         self.service = self.runtime.service
         self.port = port
+        self.host = host
         # Capture the main thread's IOLoop now; calling IOLoop.current() from the
         # headless thread later would return that thread's loop instead.
         self._ioloop = tornado.ioloop.IOLoop.current()
@@ -163,10 +172,16 @@ class TornadoServer:
 
     def start(self):
         """Start Tornado — blocks until the process is killed."""
-        self._app.listen(self.port)
-        logger.info(f"🌪  Tornado API server started on http://0.0.0.0:{self.port}")
-        logger.info(f"    REST : http://localhost:{self.port}/api/v1/node/info")
-        logger.info(f"    WS   : ws://localhost:{self.port}/ws/messages")
+        self._app.listen(self.port, address=self.host)
+        logger.info(f"🌪  Tornado API server started on http://{self.host}:{self.port}")
+        logger.info(f"    REST : http://{self.host}:{self.port}/api/v1/node/info")
+        logger.info(f"    WS   : ws://{self.host}:{self.port}/ws/messages")
+        if self.host not in ("127.0.0.1", "localhost", "::1"):
+            logger.warning(
+                "API is bound to %s with no authentication and CORS '*'. "
+                "Expose it only behind a trusted network boundary.",
+                self.host,
+            )
         try:
             self._ioloop.start()
         except KeyboardInterrupt:

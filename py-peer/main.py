@@ -19,8 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()  # loads .env from cwd (py-peer/)
 
 from headless import HeadlessService
-from ui import ChatUI
-from app import ApplicationRuntime, RuntimeConfig
+from app import ApplicationError, ApplicationRuntime, RuntimeConfig
 
 def build_runtime(args) -> ApplicationRuntime:
     """Create the single runtime that owns the peer for this process."""
@@ -214,65 +213,57 @@ async def run_simple_interactive(runtime):
     print(f"Commands: /peers, /status, /multiaddr")
     print()
     
-    # Start background task to monitor message queues
+    # Start background task to monitor runtime events
     async with trio.open_nursery() as nursery:
-        nursery.start_soon(monitor_message_queues, runtime.service)
+        nursery.start_soon(monitor_runtime_events, runtime)
         nursery.start_soon(handle_user_input, runtime)
 
 
-async def monitor_message_queues(headless_service):
-    """Monitor message queues and display incoming messages."""
-    logger.debug("monitor_message_queues function started")
-    
-    message_queue = headless_service.get_message_queue()
-    system_queue = headless_service.get_system_queue()
-    
-    logger.debug(f"Message queue: {message_queue}")
-    logger.debug(f"System queue: {system_queue}")
-    
-    if not message_queue or not system_queue:
-        logger.warning("Message queues not available")
-        return
-    
-    logger.info("📡 Starting message queue monitoring...")
-    
-    # Exit as soon as shutdown is requested; otherwise the nursery in
-    # run_simple_interactive waits forever after the user types "quit".
-    while not headless_service.stop_event.is_set():
-        try:
-            # Check message queue
-            try:
-                message_data = message_queue.sync_q.get_nowait()
-                logger.info(f"📨 Got message from queue: {message_data}")
-                
-                if message_data.get('type') == 'chat_message':
-                    sender_nick = message_data['sender_nick']
-                    sender_id = message_data['sender_id']
-                    msg = message_data['message']
+async def monitor_runtime_events(runtime):
+    """Print incoming messages and system events from the runtime EventBus.
 
-                    # Display incoming message
-                    sender_short = sender_id[:8] if len(sender_id) > 8 else sender_id
-                    print(f"[{sender_nick}({sender_short})]: {msg}")
-                    
-            except:
-                pass  # Empty queue is normal, no need to log
-            
-            # Check system queue
+    The event bus is the single non-blocking source for every adapter. The
+    legacy janus queues remain available to embedders, but the CLI does not
+    consume them: consuming both would duplicate every message.
+    """
+    from app.events import EventType
+
+    subscription = runtime.subscribe(
+        types={EventType.MESSAGE_RECEIVED, EventType.SYSTEM}
+    )
+    try:
+        while not runtime.stop_event.is_set():
             try:
-                system_data = system_queue.sync_q.get_nowait()
-                logger.info(f"📡 Got system message from queue: {system_data}")
-                
-                if system_data.get('type') == 'system_message':
-                    print(f"📡 {system_data['message']}")
-                    
-            except:
-                pass  # Empty queue is normal, no need to log
-            
-            await trio.sleep(0.1)  # Small delay to prevent busy waiting
-            
-        except Exception as e:
-            logger.error(f"Error monitoring message queues: {e}")
-            await trio.sleep(1)
+                while True:
+                    event = subscription.get_nowait()
+                    if event is None:
+                        break
+                    _print_runtime_event(event)
+            except Exception as e:
+                logger.error(f"Error monitoring runtime events: {e}")
+            await trio.sleep(0.1)
+    finally:
+        try:
+            runtime.unsubscribe(subscription)
+        except Exception:
+            logger.debug("Error closing CLI event subscription", exc_info=True)
+
+
+def _print_runtime_event(event) -> None:
+    from app.events import EventType
+
+    data = event.data or {}
+    if event.type == EventType.MESSAGE_RECEIVED:
+        if data.get("type") != "chat_message":
+            return
+        sender_nick = data.get("sender_nick", "unknown")
+        sender_id = data.get("sender_id", "")
+        message = data.get("message", "")
+        sender_short = sender_id[:8] if len(sender_id) > 8 else sender_id
+        print(f"[{sender_nick}({sender_short})]: {message}")
+    elif event.type == EventType.SYSTEM:
+        if data.get("type") == "system_message":
+            print(f"📡 {data.get('message', '')}")
 
 
 async def handle_user_input(runtime):
@@ -300,22 +291,34 @@ async def handle_user_input(runtime):
             elif message.strip() == "/multiaddr":
                 info = runtime.peer.connection_info().to_dict()
                 print(f"\n📋 Copy this multiaddress:")
-                print(f"{info.get('multiaddr', 'Unknown')}")
+                multiaddrs = info.get("multiaddrs", []) or []
+                if multiaddrs:
+                    for addr in multiaddrs:
+                        print(addr)
+                else:
+                    print(info.get('multiaddr', 'Unknown'))
                 print()
                 continue
 
             elif message.strip() == "/status":
                 info = runtime.peer.connection_info().to_dict()
                 print(f"📊 Status:")
-                print(f"  - Multiaddr: {info.get('multiaddr', 'Unknown')}")
                 print(f"  - Nickname: {info.get('nickname', 'Unknown')}")
+                print(f"  - Peer ID: {info.get('peer_id', 'Unknown')}")
+                for addr in info.get("multiaddrs", []) or []:
+                    print(f"  - Advertised: {addr}")
+                for addr in info.get("listen_addrs", []) or []:
+                    print(f"  - Listening: {addr}")
                 print(f"  - Connected peers: {info.get('peer_count', 0)}")
                 print(f"  - Subscribed topics: chat, discovery")
                 continue
 
             if message.strip():
                 # Send message through the application service layer
-                runtime.messaging.send(message)
+                try:
+                    runtime.messaging.send(message)
+                except ApplicationError as e:
+                    print(f"❌ {e.message}")
 
     except (EOFError, KeyboardInterrupt):
         print("\nGoodbye!")
@@ -444,6 +447,14 @@ def main():
         help="Port for the Tornado API server (default: 8765)"
     )
     parser.add_argument(
+        "--api-host",
+        type=str,
+        default="127.0.0.1",
+        dest="api_host",
+        help="Interface for the Tornado API server (default: 127.0.0.1). "
+             "The API is unauthenticated; use 0.0.0.0 only behind a trusted boundary."
+    )
+    parser.add_argument(
         "--api-routes",
         action="store_true",
         help="Print all available API routes and exit"
@@ -478,12 +489,12 @@ def main():
             # One runtime owns the single peer host for this process.
             logger.info("Starting application runtime in background thread...")
             runtime.start_in_thread()
-            logger.info(f"✅ HeadlessService ready — launching Tornado on port {args.api_port}")
+            logger.info(f"✅ HeadlessService ready — launching Tornado on {args.api_host}:{args.api_port}")
 
             # Start Tornado in the main thread (blocks here)
             from tornado_server import TornadoServer, _print_routes
             _print_routes(args.api_port)
-            server = TornadoServer(runtime, port=args.api_port)
+            server = TornadoServer(runtime, port=args.api_port, host=args.api_host)
             previous_handlers = install_shutdown_signal_handlers(
                 runtime, on_signal=server.stop
             )
@@ -507,7 +518,11 @@ def main():
         elif args.ui:
             # Configure logging for UI mode (no console output)
             setup_logging(ui_mode=True)
-            
+
+            # Imported lazily: headless, CLI, and API modes must not require a
+            # TUI framework to be importable.
+            from ui import ChatUI
+
             # Special handling for UI mode
             logger.info("Starting in UI mode...")
             
@@ -520,12 +535,9 @@ def main():
             logger.info("Starting Textual UI in main thread...")
             
             try:
-                # Create and run UI in main thread
-                ui = ChatUI(
-                    runtime=runtime,
-                    message_queue=runtime.service.get_message_queue(),
-                    system_queue=runtime.service.get_system_queue()
-                )
+                # Create and run UI in main thread. The UI subscribes to the
+                # runtime EventBus; no legacy queues are needed.
+                ui = ChatUI(runtime=runtime)
 
                 # Run UI - this will block until UI exits
                 ui.run()

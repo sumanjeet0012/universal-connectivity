@@ -88,8 +88,9 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 
 **Access model:**
 - One `ApplicationRuntime` (`app/`) owns the single libp2p host and service instances per process
-- Textual TUI and CLI call runtime services in-process; no HTTP hop
-- React frontend reaches the same services through Tornado REST (`/api/v1/*`) and WebSockets (`/ws/*`)
+- Textual TUI and CLI call runtime services in-process; incoming messages and
+  peer changes arrive on the shared bounded `EventBus` (no HTTP hop)
+- React frontend reaches the same services through Tornado REST (`/api/v1/*`) and WebSockets (`/ws/*`); it retries automatically when the backend restarts
 - A future MCP adapter can expose the same services without duplicating networking code
 
 ```
@@ -262,7 +263,17 @@ python main.py --api-routes
 | `--no-strict-signing` | Allow unsigned messages | `--no-strict-signing` |
 | `--api` | Start Tornado REST + WebSocket API server | `--api` |
 | `--api-port PORT` | Set Tornado API port | `--api-port 8765` |
+| `--api-host HOST` | Interface for the API (default `127.0.0.1`; the API is unauthenticated) | `--api-host 0.0.0.0` |
 | `--api-routes` | Print all API routes and exit | `--api-routes` |
+
+### API Trust Boundary
+
+The Tornado API has **no authentication** and answers with
+`Access-Control-Allow-Origin: *`. It binds to `127.0.0.1` by default and is
+intended for a trusted local client (the React dev server or a local script).
+Do not expose it to an untrusted network without a reverse proxy that enforces
+authentication and an origin policy. `--api-host 0.0.0.0` exists for containers
+and explicitly trusted networks and logs a warning when used.
 
 ### Connecting Peers
 

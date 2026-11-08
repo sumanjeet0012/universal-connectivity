@@ -44,6 +44,7 @@ export function usePyPeer(): PeerPeerState {
 
 const DEFAULT_TOPIC = 'universal-connectivity'
 const POLL_INTERVAL = 5000
+const RETRY_INTERVAL = 3000
 
 function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
   return a.timestamp === b.timestamp && a.sender_id === b.sender_id && a.message === b.message
@@ -70,6 +71,7 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     async function init() {
       try {
@@ -77,16 +79,22 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return
         setNodeInfo(info)
         setStatus(svc)
+        setError('')
         setLoading(false)
       } catch {
         if (cancelled) return
-        setError('Cannot reach the py-peer API. Make sure the backend is running and reachable.')
-        setLoading(false)
+        // Keep the boot screen up and retry automatically, so a backend
+        // restart recovers without a manual page reload.
+        setError('Cannot reach the py-peer API. Retrying automatically…')
+        retryTimer = setTimeout(init, RETRY_INTERVAL)
       }
     }
 
     init()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
   }, [])
 
   // ── Poll topics + peers ───────────────────────────────────────────────────
@@ -104,7 +112,12 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
       setConnectedPeers(peers)
       const svc = await api.getServiceStatus()
       setStatus(svc)
-    } catch { /* silent */ }
+      // The backend is reachable again; clear the boot-screen error so the
+      // chat reappears without a page reload.
+      setError('')
+    } catch {
+      setError('Lost connection to the py-peer API. Retrying automatically…')
+    }
   }, [])
 
   useEffect(() => {

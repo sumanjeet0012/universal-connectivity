@@ -77,7 +77,7 @@ Most REST endpoints return the same JSON envelope:
 | `502` | Upstream/model backend error |
 | `503` | Service not ready yet or queue unavailable |
 
-### CORS
+### CORS and trust boundary
 
 All endpoints return:
 ```
@@ -85,6 +85,12 @@ Access-Control-Allow-Origin: *
 Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
 Access-Control-Allow-Headers: Content-Type, X-API-Key
 ```
+
+The API has **no authentication**. It binds to `127.0.0.1` by default
+(`--api-host`), and wildcard CORS exists so a locally hosted React dev server
+can call it. Treat it as a trusted-local interface: do not expose it to an
+untrusted network without an authenticating reverse proxy and a restrictive
+origin policy.
 
 ---
 
