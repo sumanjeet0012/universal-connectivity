@@ -20,8 +20,14 @@ load_dotenv()  # loads .env from cwd (py-peer/)
 
 from headless import HeadlessService
 from ui import ChatUI
+from app import ApplicationRuntime, RuntimeConfig
 
 DEFAULT_SEED = "py-peer"
+
+
+def build_runtime(args) -> ApplicationRuntime:
+    """Create the single runtime that owns the peer for this process."""
+    return ApplicationRuntime(RuntimeConfig.from_namespace(args))
 
 # Configure logging
 def setup_logging(ui_mode=False):
@@ -154,65 +160,47 @@ def restore_signal_handlers(previous):
 async def main_async(args):
     """Main async function."""
     logger.info("Starting Universal Connectivity Python Peer...")
-    
-    # Create nickname
-    nickname = args.nick or f"peer-{time.time():.0f}"
-    
-    # Create headless service
-    strict_signing = not args.no_strict_signing  # Default True, False if --no-strict-signing is used
-    headless_service = HeadlessService(
-        nickname=nickname,
-        port=args.port,
-        announce_host=args.announce_host,
-        listen_addrs=args.listen_addrs or None,
-        announce_addrs=args.announce_addrs or None,
-        connect_addrs=args.connect,
-        strict_signing=strict_signing,
-        seed=args.seed,
-        topic=args.topic
-    )
-    
+
+    runtime = build_runtime(args)
+
     try:
         if args.headless:
             # Run in headless mode. There is no UI to handle Ctrl-C, so map
             # SIGINT/SIGTERM to a stop request and let start()'s finally
             # block perform the graceful teardown.
-            logger.info("Starting headless service...")
-            previous_handlers = install_shutdown_signal_handlers(headless_service)
+            logger.info("Starting application runtime...")
+            previous_handlers = install_shutdown_signal_handlers(runtime)
             try:
-                await headless_service.start()
+                await runtime.start()
             finally:
                 restore_signal_handlers(previous_handlers)
         elif args.ui:
-            # Return service configuration for UI mode
-            return headless_service
+            # Return the runtime for the UI mode handler in main().
+            return runtime
         else:
             # Run with simple interactive mode
-            logger.info("Starting headless service in background...")
-            
+            logger.info("Starting application runtime in background...")
+
             async with trio.open_nursery() as nursery:
-                # Start headless service in background
-                nursery.start_soon(headless_service.start)
-                
-                # Wait for service to be ready
-                await headless_service.ready_event.wait()
-                logger.info("✅ Headless service is ready, starting UI...")
-                
-                # Run simple interactive mode
-                await run_simple_interactive(headless_service)
-                    
+                nursery.start_soon(runtime.start)
+
+                await runtime.service.ready_event.wait()
+                logger.info("✅ Runtime is ready, starting interactive mode...")
+
+                await run_simple_interactive(runtime)
+
     except Exception as e:
         logger.error(f"Application error: {e}")
         logger.error(f"Traceback:\n{traceback.format_exc()}")
-        await headless_service.stop()
+        runtime.request_stop()
         raise
-    
+
     return None
 
 
-async def run_simple_interactive(headless_service):
+async def run_simple_interactive(runtime):
     """Run simple interactive mode."""
-    connection_info = headless_service.get_connection_info()
+    connection_info = runtime.peer.connection_info().to_dict()
     
     print(f"\n=== Universal Connectivity Chat ===")
     print(f"Nickname: {connection_info.get('nickname', 'Unknown')}")
@@ -224,8 +212,8 @@ async def run_simple_interactive(headless_service):
     
     # Start background task to monitor message queues
     async with trio.open_nursery() as nursery:
-        nursery.start_soon(monitor_message_queues, headless_service)
-        nursery.start_soon(handle_user_input, headless_service)
+        nursery.start_soon(monitor_message_queues, runtime.service)
+        nursery.start_soon(handle_user_input, runtime)
 
 
 async def monitor_message_queues(headless_service):
@@ -283,20 +271,20 @@ async def monitor_message_queues(headless_service):
             await trio.sleep(1)
 
 
-async def handle_user_input(headless_service):
+async def handle_user_input(runtime):
     """Handle user input in interactive mode."""
     try:
         while True:
             message = await trio.to_thread.run_sync(input)
-            
+
             if message.lower() in ["quit", "exit", "q"]:
                 print("Goodbye!")
                 break
-            
+
             # Handle special commands
             elif message.strip() == "/peers":
-                info = headless_service.get_connection_info()
-                peers = info.get('connected_peers', set())
+                info = runtime.peer.connection_info().to_dict()
+                peers = info.get('connected_peers', [])
                 if peers:
                     print(f"📡 Connected peers ({len(peers)}):")
                     for peer in peers:
@@ -304,31 +292,31 @@ async def handle_user_input(headless_service):
                 else:
                     print("📡 No peers connected")
                 continue
-            
+
             elif message.strip() == "/multiaddr":
-                info = headless_service.get_connection_info()
+                info = runtime.peer.connection_info().to_dict()
                 print(f"\n📋 Copy this multiaddress:")
                 print(f"{info.get('multiaddr', 'Unknown')}")
                 print()
                 continue
-            
+
             elif message.strip() == "/status":
-                info = headless_service.get_connection_info()
+                info = runtime.peer.connection_info().to_dict()
                 print(f"📊 Status:")
                 print(f"  - Multiaddr: {info.get('multiaddr', 'Unknown')}")
                 print(f"  - Nickname: {info.get('nickname', 'Unknown')}")
                 print(f"  - Connected peers: {info.get('peer_count', 0)}")
                 print(f"  - Subscribed topics: chat, discovery")
                 continue
-            
+
             if message.strip():
-                # Send message through headless service
-                headless_service.send_message(message)
-                
+                # Send message through the application service layer
+                runtime.messaging.send(message)
+
     except (EOFError, KeyboardInterrupt):
         print("\nGoodbye!")
-    
-    await headless_service.stop()
+
+    runtime.request_stop()
 
 
 def main():
@@ -467,32 +455,19 @@ def main():
             setup_logging(ui_mode=False)
             logger.info("Starting in API mode (HeadlessService + Tornado REST server)...")
 
-            nickname = args.nick or f"peer-{time.time():.0f}"
-            strict_signing = not args.no_strict_signing
-            headless_service = HeadlessService(
-                nickname=nickname,
-                port=args.port,
-                announce_host=args.announce_host,
-                listen_addrs=args.listen_addrs or None,
-                announce_addrs=args.announce_addrs or None,
-                connect_addrs=args.connect,
-                strict_signing=strict_signing,
-                seed=args.seed,
-                topic=args.topic
-            )
+            runtime = build_runtime(args)
 
-            # Start HeadlessService in a background trio thread
-            logger.info("Starting HeadlessService in background thread...")
-            ready_event = threading.Event()
-            headless_thread = run_headless_in_thread(headless_service, ready_event)
+            # One runtime owns the single peer host for this process.
+            logger.info("Starting application runtime in background thread...")
+            runtime.start_in_thread()
             logger.info(f"✅ HeadlessService ready — launching Tornado on port {args.api_port}")
 
             # Start Tornado in the main thread (blocks here)
             from tornado_server import TornadoServer, _print_routes
             _print_routes(args.api_port)
-            server = TornadoServer(headless_service, port=args.api_port)
+            server = TornadoServer(runtime, port=args.api_port)
             previous_handlers = install_shutdown_signal_handlers(
-                headless_service, on_signal=server.stop
+                runtime, on_signal=server.stop
             )
             try:
                 server.start()  # blocks until Ctrl-C or the headless service stops
@@ -501,11 +476,13 @@ def main():
                 # Covers /service/stop, Ctrl-C, SIGTERM, and adapter failures
                 # (for example a bind conflict) so the peer listener never
                 # outlives the API process.
-                stop_headless_and_join(headless_service, headless_thread)
+                runtime.request_stop()
+                runtime.join(10.0)
+                runtime.close()
 
             # A clean /service/stop exits 0; a crashed headless thread exits 1
             # so systemd (Restart=on-failure) can bring the node back.
-            if getattr(headless_service, "failed", False):
+            if runtime.failed:
                 logger.error("Headless service failed; exiting with status 1.")
                 sys.exit(1)
 
@@ -516,27 +493,11 @@ def main():
             # Special handling for Kivy mode
             logger.info("Starting in Kivy mode...")
             
-            # Create nickname
-            nickname = args.nick or f"peer-{time.time():.0f}"
-            
-            # Create headless service
-            strict_signing = not args.no_strict_signing  # Default True, False if --no-strict-signing is used
-            headless_service = HeadlessService(
-                nickname=nickname,
-                port=args.port,
-                announce_host=args.announce_host,
-                listen_addrs=args.listen_addrs or None,
-                announce_addrs=args.announce_addrs or None,
-                connect_addrs=args.connect,
-                strict_signing=strict_signing,
-                seed=args.seed,
-                topic=args.topic
-            )
-            
-            # Start headless service in background thread
-            logger.info("Starting headless service in background thread...")
-            ready_event = threading.Event()
-            headless_thread = run_headless_in_thread(headless_service, ready_event)
+            runtime = build_runtime(args)
+
+            # Start the shared runtime in a background thread
+            logger.info("Starting application runtime in background thread...")
+            runtime.start_in_thread()
             
             logger.info("Starting Kivy UI in main thread...")
             
@@ -551,11 +512,13 @@ def main():
                     sys.exit(1)
 
                 # Run Kivy UI - this will block until UI exits
-                run_kivy_ui(headless_service)
+                run_kivy_ui(runtime.service)  # Kivy reads the shared engine; Phase 6 moves it to services
             finally:
                 # Tear the peer down instead of letting the daemon thread die
                 # with the process.
-                stop_headless_and_join(headless_service, headless_thread)
+                runtime.request_stop()
+                runtime.join(10.0)
+                runtime.close()
             
         elif args.ui:
             # Configure logging for UI mode (no console output)
@@ -564,36 +527,20 @@ def main():
             # Special handling for UI mode
             logger.info("Starting in UI mode...")
             
-            # Create nickname
-            nickname = args.nick or f"peer-{time.time():.0f}"
-            
-            # Create headless service
-            strict_signing = not args.no_strict_signing  # Default True, False if --no-strict-signing is used
-            headless_service = HeadlessService(
-                nickname=nickname,
-                port=args.port,
-                announce_host=args.announce_host,
-                listen_addrs=args.listen_addrs or None,
-                announce_addrs=args.announce_addrs or None,
-                connect_addrs=args.connect,
-                strict_signing=strict_signing,
-                seed=args.seed,
-                topic=args.topic
-            )
-            
-            # Start headless service in background thread
-            logger.info("Starting headless service in background thread...")
-            ready_event = threading.Event()
-            headless_thread = run_headless_in_thread(headless_service, ready_event)
+            runtime = build_runtime(args)
+
+            # Start the shared runtime in a background thread
+            logger.info("Starting application runtime in background thread...")
+            runtime.start_in_thread()
             
             logger.info("Starting Textual UI in main thread...")
             
             try:
                 # Create and run UI in main thread
                 ui = ChatUI(
-                    headless_service=headless_service,
-                    message_queue=headless_service.get_message_queue(),
-                    system_queue=headless_service.get_system_queue()
+                    runtime=runtime,
+                    message_queue=runtime.service.get_message_queue(),
+                    system_queue=runtime.service.get_system_queue()
                 )
 
                 # Run UI - this will block until UI exits
@@ -601,7 +548,9 @@ def main():
             finally:
                 # Tear the peer down instead of letting the daemon thread die
                 # with the process.
-                stop_headless_and_join(headless_service, headless_thread)
+                runtime.request_stop()
+                runtime.join(10.0)
+                runtime.close()
             
         else:
             # Configure logging for non-UI mode (console output enabled)

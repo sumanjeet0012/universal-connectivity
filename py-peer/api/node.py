@@ -6,10 +6,7 @@ GET /api/v1/node/status   - running, ready, uptime
 GET /api/v1/node/multiaddr - advertised multiaddr(s) and bound listen addresses
 """
 
-import time
 from .base import BaseHandler
-
-_start_time = time.time()
 
 
 class NodeInfoHandler(BaseHandler):
@@ -18,16 +15,16 @@ class NodeInfoHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        info = self.service.get_connection_info()
+        info = self.peer_service.connection_info()
         self.send_success({
-            "peer_id": info.get("peer_id"),
-            "nickname": info.get("nickname"),
-            "multiaddr": info.get("multiaddr"),
-            "multiaddrs": info.get("multiaddrs", []),
-            "listen_addrs": info.get("listen_addrs", []),
+            "peer_id": info.peer_id,
+            "nickname": info.nickname,
+            "multiaddr": info.multiaddr,
+            "multiaddrs": list(info.multiaddrs),
+            "listen_addrs": list(info.listen_addrs),
             "port": self.service.port,
-            "ready": self.service.ready,
-            "uptime_seconds": round(time.time() - _start_time, 1),
+            "ready": self.runtime.ready,
+            "uptime_seconds": self.runtime.uptime_seconds,
         })
 
 
@@ -35,14 +32,15 @@ class NodeStatusHandler(BaseHandler):
     """GET /api/v1/node/status"""
 
     def get(self):
+        status = self.runtime.status()
         self.send_success({
-            "ready": self.service.ready,
-            "running": self.service.running,
-            "uptime_seconds": round(time.time() - _start_time, 1),
-            "port": self.service.port,
-            "strict_signing": self.service.strict_signing,
-            "nickname": self.service.nickname,
-            "topic": self.service.topic,
+            "ready": status.ready,
+            "running": status.running,
+            "uptime_seconds": status.uptime_seconds,
+            "port": status.port,
+            "strict_signing": status.strict_signing,
+            "nickname": status.nickname,
+            "topic": status.topic,
         })
 
 
@@ -52,8 +50,10 @@ class NodeMultiaddrHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
+        multiaddrs = self.peer_service.advertised_addrs()
+        listen_addrs = self.peer_service.listening_addrs()
         self.send_success({
-            "multiaddr": self.service.full_multiaddr,
-            "multiaddrs": list(self.service.full_multiaddrs),
-            "listen_addrs": list(self.service.transport_addrs),
+            "multiaddr": multiaddrs[0] if multiaddrs else None,
+            "multiaddrs": multiaddrs,
+            "listen_addrs": listen_addrs,
         })

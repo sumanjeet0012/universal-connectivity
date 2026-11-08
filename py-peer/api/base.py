@@ -1,11 +1,9 @@
 """
 Base handler for all Tornado API endpoints.
 
-Provides:
-- JSON response helpers
-- CORS headers
-- Service readiness check
-- Uniform error envelope
+Handlers talk to the shared ApplicationRuntime service layer, never directly to
+libp2p components. This module owns the translation from application errors to
+the HTTP envelope used by every endpoint.
 """
 
 import json
@@ -15,8 +13,37 @@ import traceback
 
 import tornado.web
 
+from app.errors import ApplicationError
+
 logger = logging.getLogger("api.base")
 
+
+def as_runtime(candidate):
+    """Return an ApplicationRuntime for ``candidate``.
+
+    ``TornadoServer`` passes a runtime. Tests and older embedders may still pass
+    a bare service object, so that case is wrapped once here instead of leaking
+    service wiring into individual handlers.
+    """
+    from app.runtime import ApplicationRuntime
+
+    if isinstance(candidate, ApplicationRuntime):
+        return candidate
+    if all(hasattr(candidate, name) for name in ("service", "peer", "messaging")):
+        return candidate  # duck-typed runtime supplied by a test double
+
+    # Bare engines (tests, older embedders) must still resolve to ONE runtime:
+    # building a new one per request would give every handler its own event bus
+    # and break "multiple adapters share the same instances".
+    existing = getattr(candidate, "_uc_runtime", None)
+    if isinstance(existing, ApplicationRuntime):
+        return existing
+    runtime = ApplicationRuntime(service=candidate)
+    try:
+        candidate._uc_runtime = runtime
+    except Exception:  # pragma: no cover - slotted/duck-typed engines
+        pass
+    return runtime
 
 def parse_string_field(body, field, default="", required=False, max_length=None):
     """
@@ -44,9 +71,40 @@ def parse_string_field(body, field, default="", required=False, max_length=None)
 class BaseHandler(tornado.web.RequestHandler):
     """Base class for all REST API handlers."""
 
-    def initialize(self, service):
-        """Inject the HeadlessService instance."""
-        self.service = service
+    def initialize(self, runtime):
+        """Inject the shared ApplicationRuntime (or a bare service)."""
+        self.runtime = as_runtime(runtime)
+        # Kept for compatibility with embedders that still reach for the engine.
+        self.service = self.runtime.service
+
+    # Convenience accessors used by handlers.
+    @property
+    def peer_service(self):
+        return self.runtime.peer
+
+    @property
+    def connection_service(self):
+        return self.runtime.connections
+
+    @property
+    def messaging_service(self):
+        return self.runtime.messaging
+
+    @property
+    def discovery_service(self):
+        return self.runtime.discovery
+
+    @property
+    def identity_service(self):
+        return self.runtime.identity
+
+    @property
+    def file_service(self):
+        return self.runtime.files
+
+    @property
+    def storage_service(self):
+        return self.runtime.storage
 
     # ------------------------------------------------------------------ #
     #  CORS                                                                #
@@ -103,14 +161,38 @@ class BaseHandler(tornado.web.RequestHandler):
     #  Service readiness guard                                             #
     # ------------------------------------------------------------------ #
     def require_ready(self):
-        """Return False and send 503 if the service is not ready yet."""
-        if not self.service or not self.service.ready:
+        """Return False and send 503 if the runtime is not ready yet."""
+        if not self.runtime.ready:
             self.send_error_response(
-                "Service not ready yet — HeadlessService is still initialising.",
+                "Service not ready yet — the peer is still initialising.",
                 status=503,
             )
             return False
         return True
+
+    # ------------------------------------------------------------------ #
+    #  Application error translation                                       #
+    # ------------------------------------------------------------------ #
+    def _handle_request_exception(self, exc):
+        """Map service-layer errors onto the existing HTTP envelope.
+
+        Services raise ApplicationError subclasses with an ``http_status``; the
+        adapter is the only place that knows about HTTP.
+        """
+        if isinstance(exc, ApplicationError):
+            logger.debug(
+                "Application error on %s %s: %s",
+                self.request.method,
+                self.request.path,
+                exc,
+            )
+            self.send_error_response(
+                exc.message,
+                status=exc.http_status,
+                detail=exc.detail,
+            )
+            return
+        super()._handle_request_exception(exc)
 
     # ------------------------------------------------------------------ #
     #  Global exception handler                                            #

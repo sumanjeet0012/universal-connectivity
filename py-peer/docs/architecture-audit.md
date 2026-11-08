@@ -111,7 +111,7 @@ Entry points are all in `main.py:main()`:
 | `kivy_ui.py` | 1374 | Kivy/KivyMD UI; reads queues, calls service directly |
 | `rag_handler.py` | 178 | Optional ChromaDB + Groq `/api/v1/ask` endpoint |
 | `py-peer-frontend/` | — | React + Vite + TypeScript client |
-| `tests/` | 7 files, 54 tests | `unittest` unit/regression tests (committed in `841b20a`; `test_address_config.py` added in Phase 1) |
+| `tests/` | 9 files, 82 tests | `unittest` unit/regression tests (committed in `841b20a`; `test_address_config.py` added in Phase 1) |
 
 ### 2.3 Current architecture (verified)
 
@@ -962,7 +962,7 @@ listeners are rewritten; concrete listeners are advertised as bound; explicit
 `--announce-addr` wins. Docker/external connectivity is deferred to Phase 7 as
 an explicit exception (§15.5).
 
-### Phase 2 — Unified service layer and shared runtime
+### Phase 2 — Unified service layer and shared runtime (done — see §16)
 
 Likely touch points:
 
@@ -1256,3 +1256,128 @@ verified for same-machine and private-LAN use. The default remains loopback for
 backward compatibility and warns loudly. Container, NAT, and non-TCP transports
 are deliberately out of scope and recorded as exceptions rather than claimed as
 working.
+
+## 16. Phase 2 — Unified service layer and shared runtime (implemented)
+
+**Status:** implemented and verified, 2026-11-08.
+**Baseline:** `a06da54` (Phase 1) plus the working tree described here.
+**Scope:** one runtime, one libp2p host, one service layer, adapters as translators.
+
+### 16.1 Package layout
+
+| Module | Responsibility |
+|---|---|
+| `app/runtime.py` | `ApplicationRuntime`: owns the one `HeadlessService`/host, constructs services, attaches the event bus, runs and joins the trio thread |
+| `app/errors.py` | `ApplicationError` hierarchy carrying `code` and `http_status` |
+| `app/models.py` | `PeerIdentity`, `ConnectionSummary`, `ServiceStatus`, `RuntimeConfig` |
+| `app/events.py` | `Event`, `EventType`, `EventBus`, `EventSubscription` (bounded janus queues) |
+| `app/services/peer.py` | identity, connection info, peerstore detail, advertised/listen addresses |
+| `app/services/connection.py` | multiaddr validation, queued dials, connection checks |
+| `app/services/messaging.py` | publish to default/topic, history, unread, mark-read |
+| `app/services/discovery.py` | topics, mesh/fanout, pubsub, DHT queries, bootstrap |
+| `app/services/identity.py` | cached identify metadata and public keys (never private keys) |
+| `app/services/files.py` | share/download/upload with download-directory containment |
+| `app/services/storage.py` | paginated in-memory history (Phase 3 replaces the backend) |
+
+No module under `app/` imports Tornado, Textual, Kivy, or MCP. Services return
+dataclasses/dicts and raise `ApplicationError` subclasses.
+
+### 16.2 Runtime lifecycle
+
+- `ApplicationRuntime(config)` builds `HeadlessService` once and exposes
+  `peer`, `connections`, `messaging`, `discovery`, `identity`, `files`,
+  `storage` over that same engine.
+- `start()` is single-use (`RuntimeError` on a second call) and awaits
+  `HeadlessService.start()` on the owning trio loop.
+- `start_in_thread(timeout)` waits for `ready`/`failed`, and on failure tears
+  down partially started resources before raising.
+- `request_stop()` is thread-safe and only signals; teardown happens once on
+  the trio thread in `HeadlessService.start()`'s `finally` block.
+- `join()` waits for the runtime thread; `close()` closes event subscriptions.
+- `status()` and `config_snapshot()` provide adapter-facing health/config
+  without exposing engine internals.
+- `api.base.as_runtime()` wraps a bare service once and caches it on the
+  service (`_uc_runtime`), so every handler and WebSocket in a process shares
+  the same runtime, services, and event bus.
+- `main.py` builds exactly one runtime in headless, API, Kivy, and Textual
+  modes; startup failure surfaces as a non-zero exit.
+
+### 16.3 Errors at the adapter boundary
+
+`BaseHandler._handle_request_exception` maps service errors onto the existing
+JSON envelope: `ValidationError` → 400, `NotFoundError` → 404,
+`ConflictError` → 409, `NotReadyError`/`OperationError` → 503,
+`UnsupportedOperationError` → 501, other `ApplicationError` → 500. Unknown
+exceptions still use Tornado's `write_error`, with tracebacks kept in the log.
+
+### 16.4 Events and backpressure
+
+`EventBus.publish` is non-blocking and never raises into the networking loop:
+each subscriber has a bounded `janus` queue (256 events by default), a full
+queue drops its oldest event and increments `dropped`, and subscribers may
+filter by `EventType`. `HeadlessService` publishes `message_received`,
+`system`, `peer_connected`, `peer_disconnected`, and `topic_subscribed`
+without affecting legacy queue delivery. `/ws/messages` and `/ws/system`
+consume the bus and unsubscribe on close (legacy queues remain a fallback for
+engines without a bus); `/ws/peers` and `/ws/pubsub/mesh` read through
+`runtime.peer` / `runtime.discovery`.
+
+### 16.5 Adapter coverage
+
+| Adapter | Path to application behaviour |
+|---|---|
+| Tornado REST (`/api/v1/*`) | `BaseHandler` → runtime services; no handler reads libp2p state directly |
+| Tornado WebSockets (`/ws/*`) | runtime services + event bus subscriptions |
+| Textual TUI (`ui.py`) | `runtime.messaging.send`, `runtime.peer.connection_info()` |
+| Simple CLI/interactive (`main.py`) | runtime services via `run_simple_interactive` |
+| Kivy (`kivy_ui.py`) | still reads the shared engine directly — Phase 6 exception; it does not create a second host |
+
+### 16.6 Verification
+
+```
+.venv/bin/python -m unittest discover -s tests
+  -> Ran 82 tests in ~1.1s ... OK
+     (54 pre-existing + 28 new in tests/test_services.py and tests/test_runtime.py)
+
+.venv/bin/python -m py_compile main.py tornado_server.py ui.py \
+    api/*.py app/*.py app/services/*.py tests/test_services.py tests/test_runtime.py
+  -> COMPILE_OK
+```
+
+API smoke run (`main.py --api` with ephemeral peer/API ports):
+
+```
+GET  /api/v1/node/status      -> ready true, running true, nickname "smoke"
+GET  /api/v1/node/info        -> advertised /ip4/127.0.0.1/tcp/<p>/p2p/<id>
+GET  /api/v1/service/status   -> state "ready", failed false, peer_count 0
+GET  /api/v1/service/config   -> listen_addrs, announce_addrs, download_dir
+GET  /api/v1/topics           -> 1 topic (universal-connectivity)
+GET  /api/v1/peers/count      -> 0
+POST /api/v1/messages         -> 202 queued
+POST /api/v1/messages {"message": 123} -> 400 (service validation)
+POST /api/v1/service/stop     -> graceful shutdown, process exit 0
+```
+
+### 16.7 Acceptance criteria (brief §6.5)
+
+- [x] Services contain application functionality and import no HTTP/Textual/Kivy/MCP framework.
+- [x] HTTP handlers call services instead of implementing networking logic.
+- [x] Textual actions call the same services.
+- [x] A future MCP adapter can call those services without duplicating functionality.
+- [x] One runtime owns one peer host per application instance.
+- [x] Startup and shutdown are explicit and tested.
+- [x] Partial startup failure cleans up initialized resources.
+- [x] Service tests run without starting a real UI.
+- [x] Event consumers cannot block the networking runtime (bounded, drop-oldest, non-raising publish).
+
+### 16.8 Explicit exceptions and follow-ups
+
+- **Kivy** still reads the shared engine directly; migrating it to services is
+  Phase 6. No second host is created.
+- **StorageService** is a read-only facade over in-memory history; durable
+  writes, dedupe, and data directories are Phase 3/4.
+- **ConnectionService.connect** only queues a dial (unchanged semantics);
+  explicit disconnect is not implemented because no existing caller needs it.
+- **API trust boundary** remains local/unauthenticated; authorization belongs
+  with the future remote/MCP adapter.
+- Non-TCP transports stay disabled per §15.

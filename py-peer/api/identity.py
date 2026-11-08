@@ -16,17 +16,8 @@ class IdentityCacheListHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        cache = self.service.get_peer_info_cache_snapshot()
-        result = {}
-        for peer_id, info in cache.items():
-            result[peer_id] = {
-                "protocol_version": info.get("protocol_version"),
-                "agent_version": info.get("agent_version"),
-                "listen_addrs": [str(a) for a in info.get("listen_addrs", [])],
-                "protocols": [str(p) for p in info.get("protocols", [])],
-                "cached_at": info.get("timestamp"),
-            }
-        self.send_success({"cache": result, "count": len(result)})
+        cache = self.identity_service.cache()
+        self.send_success({"cache": cache, "count": len(cache)})
 
 
 class IdentityPeerHandler(BaseHandler):
@@ -35,22 +26,7 @@ class IdentityPeerHandler(BaseHandler):
     def get(self, peer_id):
         if not self.require_ready():
             return
-        info = self.service.get_peer_info(peer_id)
-        if not info:
-            self.send_error_response(
-                f"No cached identify info for peer '{peer_id[:16]}...'. "
-                "Connect to the peer first so that the identify protocol is triggered automatically.",
-                status=404,
-            )
-            return
-        self.send_success({
-            "peer_id": peer_id,
-            "protocol_version": info.get("protocol_version"),
-            "agent_version": info.get("agent_version"),
-            "listen_addrs": [str(a) for a in info.get("listen_addrs", [])],
-            "protocols": [str(p) for p in info.get("protocols", [])],
-            "cached_at": info.get("timestamp"),
-        })
+        self.send_success(self.identity_service.get(peer_id))
 
 
 class IdentityPublicKeyHandler(BaseHandler):
@@ -59,17 +35,7 @@ class IdentityPublicKeyHandler(BaseHandler):
     def get(self, peer_id):
         if not self.require_ready():
             return
-        pubkey = self.service.get_public_key_for_peer(peer_id)
-        if pubkey is None:
-            self.send_error_response(
-                f"No public key cached for peer '{peer_id[:16]}...'.", status=404
-            )
-            return
-        # public key may be bytes or an object — safely convert to hex
-        if isinstance(pubkey, bytes):
-            pubkey_hex = pubkey.hex()
-        else:
-            pubkey_hex = str(pubkey)
+        pubkey_hex = self.identity_service.public_key_hex(peer_id)
         self.send_success({"peer_id": peer_id, "public_key_hex": pubkey_hex})
 
 
@@ -79,9 +45,5 @@ class IdentityCacheDeleteHandler(BaseHandler):
     def delete(self, peer_id):
         if not self.require_ready():
             return
-        if self.service.delete_peer_info(peer_id):
-            self.send_success({"message": f"Cache entry for '{peer_id[:16]}...' deleted."})
-        else:
-            self.send_error_response(
-                f"No cache entry found for peer '{peer_id[:16]}...'.", status=404
-            )
+        self.identity_service.invalidate(peer_id)
+        self.send_success({"message": f"Cache entry for '{peer_id[:16]}...' deleted."})

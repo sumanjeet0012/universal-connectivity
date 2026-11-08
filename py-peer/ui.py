@@ -83,15 +83,17 @@ class ChatUI(App[None]):
     # Reactive attributes
     peer_count = reactive(0)
     
-    def __init__(self, headless_service, message_queue, system_queue):
+    def __init__(self, runtime, message_queue, system_queue):
         super().__init__()
-        self.headless_service = headless_service
+        self.runtime = runtime
+        # Kept for queue access; operations go through the service layer.
+        self.headless_service = runtime.service
         self.message_queue = message_queue
         self.system_queue = system_queue
         self.running = False
         
         # Get connection info
-        self.connection_info = self.headless_service.get_connection_info()
+        self.connection_info = runtime.peer.connection_info().to_dict()
         
         # Widgets (will be set in compose)
         self.chat_log: Optional[Log] = None
@@ -190,7 +192,7 @@ class ChatUI(App[None]):
         
         # Send message through headless service
         try:
-            self.headless_service.send_message(message)  # Now synchronous
+            self.runtime.messaging.send(message)
             
         except Exception as e:
             logger.error(f"Failed to send message: {e}")
@@ -208,7 +210,7 @@ class ChatUI(App[None]):
             self.refresh_peers()
         
         elif cmd == "/status":
-            info = self.headless_service.get_connection_info()
+            info = self.runtime.peer.connection_info().to_dict()
             self.display_system_message(f"Status:")
             self.display_system_message(f"  - Multiaddr: {info.get('multiaddr', 'Unknown')}")
             self.display_system_message(f"  - Nickname: {info.get('nickname', 'Unknown')}")
@@ -216,7 +218,7 @@ class ChatUI(App[None]):
             self.display_system_message(f"  - Subscribed topics: chat, discovery")
         
         elif cmd == "/multiaddr":
-            info = self.headless_service.get_connection_info()
+            info = self.runtime.peer.connection_info().to_dict()
             self.display_system_message("Copy this multiaddress:")
             self.display_system_message(f"{info.get('multiaddr', 'Unknown')}")
         
@@ -289,7 +291,7 @@ class ChatUI(App[None]):
             return
         
         try:
-            info = self.headless_service.get_connection_info()
+            info = self.runtime.peer.connection_info().to_dict()
             peers = info.get('connected_peers', set())
             peer_count = len(peers)
             

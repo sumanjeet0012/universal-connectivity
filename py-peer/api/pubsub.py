@@ -17,7 +17,7 @@ class PubSubPeersHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        peers = self.service.get_pubsub_peers()
+        peers = self.discovery_service.pubsub_peers()
         self.send_success({"peers": peers, "count": len(peers)})
 
 
@@ -27,7 +27,7 @@ class PubSubMeshHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        mesh = self.service.get_gossipsub_mesh()
+        mesh = self.discovery_service.mesh()
         total_peers = sum(len(v) for v in mesh.values())
         self.send_success({
             "mesh": mesh,
@@ -42,8 +42,7 @@ class PubSubFanoutHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        fanout = self.service.get_gossipsub_fanout()
-        self.send_success({"fanout": fanout})
+        self.send_success({"fanout": self.discovery_service.fanout()})
 
 
 class PubSubConfigHandler(BaseHandler):
@@ -52,17 +51,7 @@ class PubSubConfigHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        gs = self.service.gossipsub
-        self.send_success({
-            "degree": getattr(gs, "degree", None),
-            "degree_low": getattr(gs, "degree_low", None),
-            "degree_high": getattr(gs, "degree_high", None),
-            "gossip_window": getattr(gs, "gossip_window", None),
-            "gossip_history": getattr(gs, "gossip_history", None),
-            "heartbeat_interval": getattr(gs, "heartbeat_interval", None),
-            "heartbeat_initial_delay": getattr(gs, "heartbeat_initial_delay", None),
-            "protocols": [str(p) for p in getattr(gs, "protocols", [])],
-        })
+        self.send_success(self.discovery_service.gossipsub_config())
 
 
 class PubSubSubscriptionsHandler(BaseHandler):
@@ -71,5 +60,5 @@ class PubSubSubscriptionsHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        topics = sorted(self.service.get_all_pubsub_topics())
+        topics = self.discovery_service.subscriptions()
         self.send_success({"subscriptions": topics, "count": len(topics)})

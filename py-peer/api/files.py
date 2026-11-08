@@ -11,27 +11,13 @@ POST /api/v1/files/upload          - upload via multipart and share to a topic
 import asyncio
 import os
 
+from app.services.files import is_within as _is_within  # re-exported for tests
+
 from .base import BaseHandler, parse_string_field
 
 # Cap an individual upload. Tornado still has a global body limit, but this
 # keeps the in-memory multipart buffer and the on-disk write bounded.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-
-
-def _is_within(path, directory):
-    """True when ``path`` resolves inside ``directory`` (symlinks followed)."""
-    try:
-        path_real = os.path.realpath(path)
-        dir_real = os.path.realpath(directory)
-        return os.path.commonpath([dir_real, path_real]) == dir_real
-    except (OSError, ValueError):
-        return False
-
-
-def _write_bytes(path, data):
-    """Blocking write, executed in a worker thread by the upload handler."""
-    with open(path, "wb") as f:
-        f.write(data)
 
 
 class SharedFilesHandler(BaseHandler):
@@ -40,7 +26,7 @@ class SharedFilesHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        files = self.service.get_shared_files()
+        files = self.file_service.shared_files()
         self.send_success({"shared_files": files, "count": len(files)})
 
 
@@ -50,11 +36,7 @@ class SharedFileDetailHandler(BaseHandler):
     def get(self, cid):
         if not self.require_ready():
             return
-        meta = self.service.get_shared_file(cid)
-        if not meta:
-            self.send_error_response(f"No shared file with CID '{cid}'.", status=404)
-            return
-        self.send_success(meta)
+        self.send_success(self.file_service.shared_file(cid))
 
 
 class ShareFileHandler(BaseHandler):
@@ -70,40 +52,12 @@ class ShareFileHandler(BaseHandler):
         except ValueError as e:
             self.send_error_response(str(e))
             return
-
-        file_path = os.path.expanduser(file_path)
-        if not os.path.isfile(file_path):
-            self.send_error_response(f"File not found: {file_path}", status=400)
-            return
-        # The API is unauthenticated and CORS-open. Never let a remote caller
-        # name an arbitrary host file (e.g. ~/.ssh/id_ed25519) and have the
-        # node publish it to a pubsub topic. The supported local-file sharing
-        # path is the download directory (uploaded/downloaded files); local
-        # desktop UIs call HeadlessService.share_file() directly instead.
-        if not _is_within(file_path, self.service.download_dir):
-            self.send_error_response(
-                "'file_path' must be inside the peer's download directory.",
-                status=400,
-            )
-            return
-
-        subscribed = self.service.get_subscribed_topics()
-        if topic not in subscribed:
-            self.send_error_response(
-                f"Not subscribed to topic '{topic}'. Subscribe first via POST /api/v1/topics.",
-                status=400,
-            )
-            return
-
-        queued = self.service.share_file(file_path, topic)
-        if queued:
-            filename = os.path.basename(file_path)
-            self.send_success(
-                {"message": "File share request queued", "filename": filename, "topic": topic},
-                status=202,
-            )
-        else:
-            self.send_error_response("Failed to queue file share — service not ready.", status=503)
+        # Remote callers may only share files inside the download directory;
+        # the service enforces the same boundary.
+        self.send_success(
+            self.file_service.share_local_file(file_path, topic),
+            status=202,
+        )
 
 
 class DownloadFileHandler(BaseHandler):
@@ -119,15 +73,7 @@ class DownloadFileHandler(BaseHandler):
         except ValueError as e:
             self.send_error_response(str(e))
             return
-
-        queued = self.service.download_file(cid, name)
-        if queued:
-            self.send_success(
-                {"message": "Download request queued", "file_cid": cid, "file_name": name},
-                status=202,
-            )
-        else:
-            self.send_error_response("Failed to queue download — service not ready.", status=503)
+        self.send_success(self.file_service.download(cid, name), status=202)
 
 
 class UploadAndShareHandler(BaseHandler):
@@ -153,8 +99,7 @@ class UploadAndShareHandler(BaseHandler):
             return
 
         # Validate the topic before writing anything to disk.
-        subscribed = self.service.get_subscribed_topics()
-        if topic not in subscribed:
+        if topic not in self.messaging_service.subscribed_topics():
             self.send_error_response(
                 f"Not subscribed to topic '{topic}'. Subscribe first via POST /api/v1/topics.",
                 status=400,
@@ -162,11 +107,6 @@ class UploadAndShareHandler(BaseHandler):
             return
 
         file_info = self.request.files["file"][0]
-        # A multipart filename is attacker-controlled: strip any directory
-        # components so it cannot escape the download directory.
-        filename = os.path.basename(file_info["filename"] or "upload").strip()
-        if filename in ("", ".", ".."):
-            filename = "upload"
         file_data = file_info["body"]
         if len(file_data) > MAX_UPLOAD_BYTES:
             self.send_error_response(
@@ -175,32 +115,21 @@ class UploadAndShareHandler(BaseHandler):
             )
             return
 
-        # Save to download_dir
-        save_path = os.path.join(self.service.download_dir, filename)
-        # Handle name collisions
-        counter = 1
-        base, ext = os.path.splitext(filename)
-        while os.path.exists(save_path):
-            save_path = os.path.join(self.service.download_dir, f"{base}_{counter}{ext}")
-            counter += 1
-        if not _is_within(save_path, self.service.download_dir):
-            self.send_error_response("Invalid upload filename.", status=400)
-            return
-
         # Offload the write: a synchronous multi-megabyte write would block
-        # every API/WebSocket client on the single Tornado IOLoop thread.
-        await asyncio.to_thread(_write_bytes, save_path, file_data)
-
-        queued = self.service.share_file(save_path, topic)
-        if queued:
-            self.send_success(
-                {
-                    "message": "File uploaded and share request queued",
-                    "filename": os.path.basename(save_path),
-                    "size": len(file_data),
-                    "topic": topic,
-                },
-                status=202,
-            )
-        else:
-            self.send_error_response("Failed to queue file share — service not ready.", status=503)
+        # every API/WebSocket client on the single Tornado IOLoop thread. The
+        # service sanitises the attacker-controlled multipart filename.
+        stored = await asyncio.to_thread(
+            self.file_service.store_upload,
+            file_info["filename"],
+            file_data,
+        )
+        self.file_service.share_local_file(stored["path"], topic)
+        self.send_success(
+            {
+                "message": "File uploaded and share request queued",
+                "filename": stored["filename"],
+                "size": stored["size"],
+                "topic": topic,
+            },
+            status=202,
+        )

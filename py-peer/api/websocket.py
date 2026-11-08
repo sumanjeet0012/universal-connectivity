@@ -1,10 +1,15 @@
 """
 WebSocket handlers — real-time streaming for API clients.
 
-WS /ws/messages   - stream chat + file messages from message_queue
-WS /ws/system     - stream system events from system_queue
+WS /ws/messages   - stream chat + file messages (application event bus)
+WS /ws/system     - stream system events (application event bus)
 WS /ws/peers      - periodic peer list updates
 WS /ws/pubsub/mesh - periodic GossipSub mesh topology updates
+
+Message and system streams subscribe to the runtime's bounded event bus: a
+slow browser can only fill its own queue, and the producer (the trio/libp2p
+thread) never blocks. Engines without an event bus (legacy embedders) fall
+back to the per-client legacy queue.
 """
 
 import json
@@ -23,10 +28,13 @@ MESH_PUSH_INTERVAL  = 5.0
 
 
 class BaseWebSocketHandler(tornado.websocket.WebSocketHandler):
-    """Shared WebSocket base: CORS + injected service."""
+    """Shared WebSocket base: CORS + injected shared runtime."""
 
-    def initialize(self, service):
-        self.service = service
+    def initialize(self, runtime):
+        from .base import as_runtime
+
+        self.runtime = as_runtime(runtime)
+        self.service = self.runtime.service
         self._running = False
         self._task: asyncio.Task | None = None
 
@@ -58,6 +66,13 @@ class BaseWebSocketHandler(tornado.websocket.WebSocketHandler):
         except tornado.websocket.WebSocketClosedError:
             self._running = False
 
+    def _subscribe_events(self, event_types):
+        """Subscribe to the runtime event bus, or return None if unavailable."""
+        events = getattr(self.runtime, "events", None)
+        if events is None:
+            return None
+        return self.runtime.subscribe(event_types)
+
 
 # ──────────────────────────────────────────────────────────
 #  WS /ws/messages
@@ -71,24 +86,30 @@ class MessageStreamHandler(BaseWebSocketHandler):
         { "action": "unfilter" }
     """
 
-    def initialize(self, service):
-        super().initialize(service)
+    def initialize(self, runtime):
+        super().initialize(runtime)
         self._topic_filter: str | None = None
-        self._sub_queue = None
+        self._subscription = None
+        self._legacy_queue = None
 
     def open(self):
-        # Every WebSocket client gets its own queue: the shared message_queue is
-        # single-consumer, so multiple tabs would otherwise steal messages from
-        # each other instead of all receiving them.
-        if self.service:
-            self._sub_queue = self.service.register_subscriber("message")
+        from app.events import EventType
+
+        # Every subscriber gets its own bounded queue: multiple tabs all see
+        # every message instead of stealing from a single-consumer queue.
+        self._subscription = self._subscribe_events([EventType.MESSAGE_RECEIVED])
+        if self._subscription is None and self.service:
+            self._legacy_queue = self.service.register_subscriber("message")
         super().open()
 
     def on_close(self):
         super().on_close()
-        if self._sub_queue is not None and self.service:
-            self.service.unregister_subscriber("message", self._sub_queue)
-            self._sub_queue = None
+        if self._subscription is not None:
+            self.runtime.unsubscribe(self._subscription)
+            self._subscription = None
+        if self._legacy_queue is not None and self.service:
+            self.service.unregister_subscriber("message", self._legacy_queue)
+            self._legacy_queue = None
 
     def on_message(self, raw):
         try:
@@ -108,18 +129,22 @@ class MessageStreamHandler(BaseWebSocketHandler):
         while self._running and not (self.service and self.service.ready):
             await asyncio.sleep(0.2)
 
-        if self._sub_queue is None:
+        if self._subscription is None and self._legacy_queue is None:
             return
 
         while self._running:
             try:
-                # Drain all available messages
                 while True:
-                    try:
-                        msg = self._sub_queue.sync_q.get_nowait()
-                    except Empty:
+                    if self._subscription is not None:
+                        event = self._subscription.get_nowait()
+                        msg = None if event is None else event.data
+                    else:
+                        try:
+                            msg = self._legacy_queue.sync_q.get_nowait()
+                        except Empty:
+                            msg = None
+                    if msg is None:
                         break
-                    # Apply optional topic filter
                     if self._topic_filter and msg.get("topic") != self._topic_filter:
                         continue
                     self._safe_write({"event": msg.get("type", "message"), "data": msg})
@@ -137,36 +162,49 @@ class MessageStreamHandler(BaseWebSocketHandler):
 class SystemStreamHandler(BaseWebSocketHandler):
     """Streams system events and service notifications."""
 
-    def initialize(self, service):
-        super().initialize(service)
-        self._sub_queue = None
+    def initialize(self, runtime):
+        super().initialize(runtime)
+        self._subscription = None
+        self._legacy_queue = None
 
     def open(self):
-        if self.service:
-            self._sub_queue = self.service.register_subscriber("system")
+        from app.events import EventType
+
+        self._subscription = self._subscribe_events([EventType.SYSTEM])
+        if self._subscription is None and self.service:
+            self._legacy_queue = self.service.register_subscriber("system")
         super().open()
 
     def on_close(self):
         super().on_close()
-        if self._sub_queue is not None and self.service:
-            self.service.unregister_subscriber("system", self._sub_queue)
-            self._sub_queue = None
+        if self._subscription is not None:
+            self.runtime.unsubscribe(self._subscription)
+            self._subscription = None
+        if self._legacy_queue is not None and self.service:
+            self.service.unregister_subscriber("system", self._legacy_queue)
+            self._legacy_queue = None
 
     async def _push_loop(self):
         while self._running and not (self.service and self.service.ready):
             await asyncio.sleep(0.2)
 
-        if self._sub_queue is None:
+        if self._subscription is None and self._legacy_queue is None:
             return
 
         while self._running:
             try:
                 while True:
-                    try:
-                        msg = self._sub_queue.sync_q.get_nowait()
-                    except Empty:
+                    if self._subscription is not None:
+                        event = self._subscription.get_nowait()
+                        payload = None if event is None else event.data
+                    else:
+                        try:
+                            payload = self._legacy_queue.sync_q.get_nowait()
+                        except Empty:
+                            payload = None
+                    if payload is None:
                         break
-                    self._safe_write({"event": "system_message", "data": msg})
+                    self._safe_write({"event": "system_message", "data": payload})
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 break
@@ -188,8 +226,7 @@ class PeerUpdateHandler(BaseWebSocketHandler):
         last_peers: list = []
         while self._running:
             try:
-                info = self.service.get_connection_info()
-                peers = sorted(str(p) for p in info.get("connected_peers", set()))
+                peers = self.runtime.peer.connected_peers()
                 if peers != last_peers:
                     last_peers = peers
                     self._safe_write({
@@ -222,7 +259,7 @@ class MeshUpdateHandler(BaseWebSocketHandler):
             try:
                 mesh = {
                     topic: sorted(peers)
-                    for topic, peers in self.service.get_gossipsub_mesh().items()
+                    for topic, peers in self.runtime.discovery.mesh().items()
                 }
                 self._safe_write({
                     "event": "mesh_update",

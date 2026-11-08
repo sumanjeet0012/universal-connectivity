@@ -1,9 +1,10 @@
 """
 Tornado REST + WebSocket server for the py-peer Universal Connectivity DApp.
 
-Routes all API requests to the appropriate handlers, injects the HeadlessService
-via handler `initialize()`, and runs the asyncio IOLoop in the main thread while
-HeadlessService runs on a trio event loop in a background thread.
+Routes all API requests to the appropriate handlers, injects the shared
+ApplicationRuntime (which owns the one libp2p host) via handler `initialize()`,
+and runs the asyncio IOLoop in the main thread while the runtime's trio loop
+runs in a background thread.
 
 Usage
 -----
@@ -44,10 +45,10 @@ logger = logging.getLogger("tornado_server")
 DEFAULT_API_PORT = 8765
 
 
-def _make_app(service, vectorstore=None) -> tornado.web.Application:
+def _make_app(runtime, vectorstore=None) -> tornado.web.Application:
     """Build and return the Tornado Application with all routes."""
 
-    kw = dict(service=service)   # kwargs passed to every handler's initialize()
+    kw = dict(runtime=runtime)   # kwargs passed to every handler's initialize()
 
     routes = [
         # ── Node ────────────────────────────────────────────────────────
@@ -129,22 +130,25 @@ class TornadoServer:
 
     Parameters
     ----------
-    service : HeadlessService
-        The running (or still-starting) headless service.
+    runtime : ApplicationRuntime
+        The shared runtime (or a bare HeadlessService, which is wrapped once).
     port : int
         HTTP port to listen on (default 8765).
     """
 
-    def __init__(self, service, port: int = DEFAULT_API_PORT):
-        self.service = service
+    def __init__(self, runtime, port: int = DEFAULT_API_PORT):
+        from api.base import as_runtime
+
+        self.runtime = as_runtime(runtime)
+        self.service = self.runtime.service
         self.port = port
         # Capture the main thread's IOLoop now; calling IOLoop.current() from the
         # headless thread later would return that thread's loop instead.
         self._ioloop = tornado.ioloop.IOLoop.current()
-        if hasattr(service, "on_stopped"):
-            service.on_stopped = self._on_service_stopped
+        if hasattr(self.service, "on_stopped"):
+            self.service.on_stopped = self._on_service_stopped
         vectorstore = load_vectorstore()
-        self._app = _make_app(service, vectorstore=vectorstore)
+        self._app = _make_app(self.runtime, vectorstore=vectorstore)
 
     def _on_service_stopped(self):
         """Shut the API down once the headless service has stopped."""

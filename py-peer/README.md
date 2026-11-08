@@ -103,8 +103,11 @@ Kivy, Textual, and CLI modes run with direct in-process access to the HeadlessSe
 ## 🏗️ Architecture
 
 **Access model:**
-- Kivy UI, Textual TUI, and CLI mode access HeadlessService directly in-process
-- React frontend accesses HeadlessService indirectly via Tornado API (`/api/v1/*`) and WebSockets (`/ws/*`)
+- One `ApplicationRuntime` (`app/`) owns the single libp2p host and service instances per process
+- Textual TUI and CLI call runtime services in-process; no HTTP hop
+- React frontend reaches the same services through Tornado REST (`/api/v1/*`) and WebSockets (`/ws/*`)
+- Kivy still reads the shared engine until its adapter migration in Phase 6
+- A future MCP adapter can expose the same services without duplicating networking code
 
 ```
 ┌────────────────────────────────────┐      ┌──────────────────────────────┐
@@ -156,7 +159,8 @@ Kivy, Textual, and CLI modes run with direct in-process access to the HeadlessSe
 - **main.py** - Application entry point and argument parsing
 - **kivy_ui.py** - Modern mobile-friendly Kivy interface (NEW!)
 - **ui.py** - Textual-based terminal user interface
-- **headless.py** - Background service managing libp2p operations
+- **headless.py** - Background engine managing libp2p operations (the runtime's transport layer)
+- **app/** - Framework-independent `ApplicationRuntime` and services (peer, connection, messaging, discovery, identity, files, storage)
 - **chatroom.py** - Chat room logic, topic management, and message handling
 - **tornado_server.py** - Tornado REST + WebSocket server bootstrap and route wiring
 - **api/** - Versioned API handlers (node, peers, topics, messages, files, dht, pubsub, identity, service, websocket)

@@ -23,12 +23,7 @@ class SendDefaultMessageHandler(BaseHandler):
         except ValueError as e:
             self.send_error_response(str(e))
             return
-        if not self.service.send_message(msg):
-            self.send_error_response(
-                "Failed to queue message — service is busy or not ready.",
-                status=503,
-            )
-            return
+        self.messaging_service.send(msg)
         self.send_success({"message": "Message queued for delivery"}, status=202)
 
 
@@ -47,22 +42,7 @@ class TopicMessagesHandler(BaseHandler):
         except ValueError:
             self.send_error_response("'limit' and 'offset' must be integers.")
             return
-        if not 1 <= limit <= 1000:
-            self.send_error_response("'limit' must be between 1 and 1000.")
-            return
-        if offset < 0:
-            self.send_error_response("'offset' must be zero or greater.")
-            return
-
-        all_msgs = self.service.get_topic_messages(topic)
-        page = all_msgs[offset: offset + limit]
-        self.send_success({
-            "topic": topic,
-            "messages": page,
-            "total": len(all_msgs),
-            "limit": limit,
-            "offset": offset,
-        })
+        self.send_success(self.storage_service.history(topic, limit=limit, offset=offset))
 
     def post(self, topic):
         if not self.require_ready():
@@ -73,23 +53,10 @@ class TopicMessagesHandler(BaseHandler):
         except ValueError as e:
             self.send_error_response(str(e))
             return
-
-        # Check topic is subscribed
-        subscribed = self.service.get_subscribed_topics()
-        if topic not in subscribed:
-            self.send_error_response(
-                f"Not subscribed to topic '{topic}'. Subscribe first via POST /api/v1/topics.",
-                status=400,
-            )
-            return
-
-        if not self.service.send_message_to_topic(topic, msg):
-            self.send_error_response(
-                "Failed to queue message — service is busy or not ready.",
-                status=503,
-            )
-            return
-        self.send_success({"message": "Message queued for delivery", "topic": topic}, status=202)
+        self.messaging_service.send_to_topic(topic, msg)
+        self.send_success(
+            {"message": "Message queued for delivery", "topic": topic}, status=202
+        )
 
 
 class TopicUnreadHandler(BaseHandler):
@@ -98,7 +65,7 @@ class TopicUnreadHandler(BaseHandler):
     def get(self, topic):
         if not self.require_ready():
             return
-        count = self.service.get_unread_count(topic)
+        count = self.messaging_service.unread_count(topic)
         self.send_success({"topic": topic, "unread_count": count})
 
 
@@ -108,5 +75,5 @@ class TopicMarkReadHandler(BaseHandler):
     def put(self, topic):
         if not self.require_ready():
             return
-        self.service.mark_topic_as_read(topic)
+        self.messaging_service.mark_read(topic)
         self.send_success({"topic": topic, "message": "All messages marked as read"})

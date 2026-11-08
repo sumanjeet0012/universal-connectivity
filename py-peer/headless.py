@@ -110,7 +110,7 @@ class HeadlessService:
     Headless service that manages libp2p components and provides data to UI through queues.
     """
 
-    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1", listen_addrs: List[str] = None, announce_addrs: List[str] = None):
+    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1", listen_addrs: List[str] = None, announce_addrs: List[str] = None, event_bus=None):
         self.nickname = nickname
         self.port = port if port != 0 else 4001
         self.connect_addrs = connect_addrs or []
@@ -132,6 +132,7 @@ class HeadlessService:
         # advertise a concrete address instead (override with --announce-host
         # for LAN access, or --announce-addr for full control).
         self.announce_host = announce_host
+        self.event_bus = event_bus  # optional app.events.EventBus; additive
         self.ui_mode = ui_mode  # Flag to control logging behavior
         self.strict_signing = strict_signing  # Flag to control message signing
         self.seed = seed if seed else DEFAULT_SEED  # Seed string for deterministic peer ID (default: 'py-peer')
@@ -208,13 +209,23 @@ class HeadlessService:
         self._state_lock = threading.RLock()
         self._subscribers_lock = threading.RLock()
 
+        # Snapshot used to derive peer connect/disconnect application events.
+        self._known_connected_peers: set[str] = set()
+
         if not ui_mode:  # Only log initialization if not in UI mode
             logger.info(f"HeadlessService initialized - nickname: {nickname}, port: {self.port}, strict_signing: {strict_signing}, seed: {self.seed}")
     
     async def monitor_peers(self):
         while True:
             try:
-                logger.info(f"Connected peers are: {len(self.host.get_connected_peers())}")
+                current = {str(peer) for peer in self.host.get_connected_peers()}
+                previous = self._known_connected_peers
+                for peer_id in sorted(current - previous):
+                    self._publish_event("peer_connected", {"peer_id": peer_id})
+                for peer_id in sorted(previous - current):
+                    self._publish_event("peer_disconnected", {"peer_id": peer_id})
+                self._known_connected_peers = current
+                logger.info(f"Connected peers are: {len(current)}")
                 logger.info(f"Peers in peer store are: {len(self.host.get_peerstore().peers_with_addrs())}")
                 logger.info(f"Peers in routing table are: {len(self.dht.routing_table.get_peer_ids())}")
                 logger.info(f"Peers in pubsub are: {len(self.pubsub.peers.keys())}")
@@ -958,15 +969,41 @@ class HeadlessService:
             # without limit.
             self._put_legacy(self.message_queue, message_data)
             self._fanout(self.message_subscribers, message_data)
+            self._publish_event("message_received", message_data)
             
         except Exception as e:
             logger.error(f"Error handling chat message: {e}")
             logger.exception("Full traceback:")
     
+    def _publish_event(self, event_type, data: Dict[str, Any]) -> None:
+        """Publish an application event without ever blocking the trio loop.
+
+        Imported lazily so ``headless`` has no import-time dependency on the
+        service layer. Failures must not affect message delivery.
+        """
+        bus = getattr(self, "event_bus", None)
+        if bus is None:
+            return
+        try:
+            from app.events import Event, EventType
+
+            if isinstance(event_type, str):
+                try:
+                    event_type = EventType(event_type)
+                except ValueError:
+                    pass
+            bus.publish(Event(event_type, dict(data)))
+        except Exception:
+            logger.debug("Failed to publish %s event", event_type, exc_info=True)
+
     async def _send_system_message(self, message: str):
         """Send system message to UI queue."""
         logger.debug(f"_send_system_message called with: {message}")
         try:
+            self._publish_event(
+                "system",
+                {"type": "system_message", "message": message, "timestamp": time.time()},
+            )
             if self.system_queue:
                 logger.debug(f"System queue available, sending message: {message}")
                 payload = {
@@ -1046,6 +1083,7 @@ class HeadlessService:
                             success = await self.chat_room.subscribe_to_topic(topic_name)
                             if success:
                                 logger.info(f"Successfully subscribed to topic: {topic_name}")
+                                self._publish_event("topic_subscribed", {"topic": topic_name})
                                 await self._send_system_message(f"Subscribed to topic: {topic_name}")
                             else:
                                 logger.warning(f"Failed to subscribe to topic: {topic_name}")
