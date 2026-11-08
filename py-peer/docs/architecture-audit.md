@@ -47,14 +47,14 @@ The most important verified findings are:
    identify metadata, shared-file metadata, and Bitswap blocks are in memory.
    Identity is re-derived from a seed on every launch, and the default seed
    (`"py-peer"`) is shared by every peer that does not override it.
-5. **Writable state depends on the current working directory.** The rotating
-   `system_messages.txt` log is created relative to CWD at import time, `.env` is
-   loaded from CWD, and downloads go to `~/Downloads`. There is no
-   `UC_DATA_DIR`, no `platformdirs` usage in application code, and no
-   application data directory.
-6. **Kivy is a mandatory dependency** even though it is only imported by
-   `kivy_ui.py` (deferred import in `main.py`). No Android/buildozer/
-   python-for-android files exist, and no py-peer CI workflow exists.
+5. **Writable state depended on the current working directory.** Resolved by
+   Phase 4 (§18): identity, history, and the system log live under one resolved
+   data root (`--data-dir` / `UC_DATA_DIR` / platform default). `.env` is still
+   read from CWD and downloads still go to `~/Downloads` by design.
+6. **Kivy was a mandatory dependency** even though it is only imported by
+   `kivy_ui.py` (deferred import in `main.py`). Resolved by Phase 5 (§19): Kivy
+   is now the optional `kivy` extra. No Android/buildozer/python-for-android
+   files exist, and no py-peer CI workflow exists.
 7. **The package build is not distributable as-is:** `uv build` succeeds, but the
    wheel is **36 MB / 129 MB uncompressed** and contains **13,572
    `py-peer-frontend/node_modules` entries**, plus `dist/`, tests, and docs. The
@@ -702,26 +702,35 @@ persistent chat history or offline delivery would be false today.
 
 ### 8.1 Kivy usage
 
+Phase 5 update: Kivy/KivyMD are no longer installed by default; they are the
+optional `kivy` extra (§19). The observations below remain true.
+
 - Kivy is imported only by `kivy_ui.py` (top-level imports of `kivy.*` and
-  `kivymd.*`). `main.py` imports `kivy_ui` lazily only under `--kivy`
-  (`main.py:437-447`).
-- Core modules (`headless.py`, `chatroom.py`, `api/*`, `tornado_server.py`,
-  `ui.py`, `main.py`) do **not** import Kivy.
+  `kivymd.*`). `main.py` imports `kivy_ui` lazily only under `--kivy`, now
+  before starting the runtime, and exits with an install hint if the extra is
+  missing.
+- Core modules (`headless.py`, `chatroom.py`, `app/*`, `api/*`,
+  `tornado_server.py`, `ui.py`, `main.py`) do **not** import Kivy, at module
+  level or otherwise.
 - Kivy UI talks to the same in-process service through direct calls and janus
   queues, like the Textual UI.
 - No Buildozer, `.spec`, python-for-android, or Android/iOS packaging files are
   present.
-- README claims mobile/Kivy support and shows screenshots, but no Android build
-  is verified or configured in this repository.
+- The README shows Kivy screenshots but labels the extra as optional and states
+  that no Android build is verified or configured in this repository.
 
 ### 8.2 Dependency impact
 
-Direct runtime dependencies (`pyproject.toml:7-20`):
+Direct runtime dependencies (`pyproject.toml`):
 
 ```text
 textual, libp2p (fork via uv.sources), trio, base58, protobuf, janus,
-trio_asyncio, kivy, kivymd, python-dotenv, groq, tornado
+trio_asyncio, python-dotenv, platformdirs, groq, tornado
 ```
+
+Optional extra `kivy` (`[project.optional-dependencies]`): `kivy`, `kivymd`.
+The default install no longer pulls the Kivy chain (`asynckivy`,
+`materialshapes`, `materialyoucolor`, Pillow).
 
 Verified installed versions in `.venv`:
 
@@ -737,9 +746,9 @@ kivy 2.3.1
 kivymd 2.0.0
 ```
 
-KivyMD pulls `asynckivy`, `materialshapes`, `materialyoucolor`, and Pillow
-(`uv.lock`). Removing `kivy` and `kivymd` would remove that chain; no other
-module uses those packages.
+KivyMD pulled `asynckivy`, `materialshapes`, `materialyoucolor`, and Pillow
+(`uv.lock`). Phase 5 removed that chain from the default install: those
+packages are only present when the `kivy` extra is requested.
 
 ### 8.3 Packaging findings
 
@@ -1017,14 +1026,20 @@ Delivered:
   runtime wiring. A two-process API run verified a stable peer ID and history
   across a restart.
 
-### Phase 5 — Remove Kivy from core
+### Phase 5 — Remove Kivy from core (done — see §19)
 
-- Remove `kivy`/`kivymd` from mandatory dependencies; move `kivy_ui.py` to an
-  optional extra or retire it.
-- Verify `main.py`, `headless.py`, API, and Textual import/run in a clean venv
-  without Kivy.
-- Update README, screenshots, and support policy.
-- Treat Android as a separate decision; do not claim removal alone fixes it.
+Delivered:
+
+- `kivy` and `kivymd` moved from `dependencies` to the optional `kivy` extra;
+  `kivy_ui.py` stays as the extra's adapter.
+- `--kivy` now imports the UI before creating the runtime and exits 1 with an
+  install hint (written to stderr as well as the log, because UI mode silences
+  logging) when the extra is missing.
+- Verified that `main`, `headless`, `chatroom`, `ui`, `tornado_server`, `api.*`,
+  and `app.*` import with `kivy`/`kivymd` made unimportable; packaging tests
+  assert Kivy is not a required dependency.
+- README documents the extra, the install commands, and the support policy;
+  Android remains an explicit, unstarted decision.
 
 ### Phase 6 — UI adapters
 
@@ -1690,3 +1705,75 @@ CWD:   only the scratch process logs; no system_messages.txt, history.db, or ide
   README tells multi-peer users to pass `--data-dir` or `--seed`.
 - [ ] The identity file is not encrypted at rest; protection is filesystem
   permissions (0600) and the data directory's own permissions.
+
+## 19. Phase 5 — Remove Kivy from the core runtime (implemented)
+
+**Status:** implemented and verified, 2026-11-08.
+**Baseline:** `0364296` (Phase 4).
+**Scope:** Kivy/KivyMD stop being required by default; the optional UI keeps
+working when installed. No change to the service layer or network behaviour.
+
+### 19.1 Packaging
+
+`pyproject.toml` now declares:
+
+```toml
+[project.optional-dependencies]
+kivy = ["kivy>=2.3.0", "kivymd>=1.2.0"]
+```
+
+and no longer lists `kivy`/`kivymd` in `[project.dependencies]`. A default
+install (or `uv sync`) therefore drops `kivy`, `kivymd`, `asynckivy`,
+`materialshapes`, `materialyoucolor`, and Pillow from the runtime environment.
+Installing is explicit: `pip install -e '.[kivy]'` or `uv sync --extra kivy`.
+`kivy_ui.py` is unchanged; it is the extra's adapter, not a core module.
+
+### 19.2 `--kivy` behaviour
+
+The Kivy branch imports `kivy_ui` **before** `build_runtime`, so a missing extra
+no longer starts a host, creates a data directory, opens SQLite, and then quits.
+It logs and prints to stderr:
+
+```text
+Kivy UI is not installed (optional extra).
+Import error: No module named 'kivy'
+Install it with: pip install -e '.[kivy]' (with uv: uv sync --extra kivy)
+The Textual TUI (--ui), simple CLI, and API (--api) work without it.
+```
+
+The stderr copy matters: UI mode installs only a `NullHandler` (by design, to
+keep the terminal clean), so `logger.error` alone would have been invisible.
+The process exits 1 and leaves no data directory behind.
+
+### 19.3 Verification
+
+```
+.venv/bin/python -m unittest discover -s tests
+  -> Ran 145 tests ... OK
+     (140 after Phase 4 + 5 new in tests/test_kivy_optional.py)
+
+.venv/bin/python -m py_compile main.py kivy_ui.py
+  -> COMPILE_OK
+```
+
+`tests/test_kivy_optional.py` runs a subprocess with a meta-path finder that
+raises `ImportError` for `kivy`/`kivymd`, then imports `main`, `headless`,
+`chatroom`, `tornado_server`, `ui`, `api.base`, `app.runtime`, and `app.paths`.
+It also asserts no `kivy*` module leaked into `sys.modules`, that `--kivy`
+exits 1 with the install hint without creating `history.db` or `identity/`, and
+that `pyproject.toml` keeps both packages in the optional extra only.
+
+### 19.4 Acceptance and explicit exceptions
+
+- [x] Core dependencies no longer include Kivy or KivyMD.
+- [x] `main.py`, `headless.py`, `chatroom.py`, `ui.py`, the API, and `app/*`
+  import without Kivy installed.
+- [x] `--kivy` fails fast and tells the operator how to install the extra.
+- [x] README documents the extra and states a support policy.
+- [ ] `kivy_ui.py` still talks to the engine directly; moving it to services is
+  Phase 6.
+- [ ] No automated test renders the Kivy UI; the subprocess test covers imports
+  and dependency policy only.
+- [ ] No Android/Buildozer packaging exists, and removing the dependency does
+  not make the app installable on Android. That stays a separate decision.
+- [ ] The Kivy extra is not exercised in CI (there is no CI workflow yet).

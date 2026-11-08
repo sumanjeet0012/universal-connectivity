@@ -348,7 +348,7 @@ def main():
     parser.add_argument(
         "--kivy",
         action="store_true",
-        help="Use Kivy UI (mobile-friendly interface)"
+        help="Use the optional Kivy UI (requires: pip install -e '.[kivy]')"
     )
     
     parser.add_argument(
@@ -516,7 +516,27 @@ def main():
             
             # Special handling for Kivy mode
             logger.info("Starting in Kivy mode...")
-            
+
+            # Kivy is an optional extra. Import it before creating the runtime,
+            # so a missing install exits immediately instead of starting a host,
+            # opening the data directory, and then quitting.
+            try:
+                from kivy_ui import run_kivy_ui
+            except ImportError as e:
+                # UI mode installs a null log handler, so also write to stderr:
+                # a missing optional dependency must never fail silently.
+                message = (
+                    "Kivy UI is not installed (optional extra).\n"
+                    f"Import error: {e}\n"
+                    "Install it with: pip install -e '.[kivy]' "
+                    "(with uv: uv sync --extra kivy)\n"
+                    "The Textual TUI (--ui), simple CLI, and API (--api) work "
+                    "without it."
+                )
+                logger.error(message)
+                print(message, file=sys.stderr)
+                sys.exit(1)
+
             runtime = build_runtime(args)
 
             # Start the shared runtime in a background thread
@@ -526,15 +546,6 @@ def main():
             logger.info("Starting Kivy UI in main thread...")
             
             try:
-                # Import kivy_ui here to avoid issues if kivy is not installed
-                try:
-                    from kivy_ui import run_kivy_ui
-                except ImportError as e:
-                    logger.error("Failed to import kivy_ui. Make sure Kivy and KivyMD are installed.")
-                    logger.error(f"Error: {e}")
-                    logger.error("Install with: pip install kivy kivymd")
-                    sys.exit(1)
-
                 # Run Kivy UI - this will block until UI exits
                 run_kivy_ui(runtime.service)  # Kivy reads the shared engine; Phase 6 moves it to services
             finally:

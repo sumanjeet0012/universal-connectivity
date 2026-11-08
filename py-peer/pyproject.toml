@@ -12,12 +12,18 @@ dependencies = [
     "protobuf>=6.32.1,<7",
     "janus>=1.0.0",
     "trio_asyncio",
-    "kivy>=2.3.0",
-    "kivymd>=1.2.0",
     "python-dotenv>=1.2.2",
     "platformdirs>=4.0.0",
     "groq>=1.0.0",
     "tornado>=6.5.5"
+]
+
+[project.optional-dependencies]
+# Optional Kivy/KivyMD desktop UI (main.py --kivy). Not required by the core
+# runtime, the Textual TUI, the simple CLI, or the API server.
+kivy = [
+    "kivy>=2.3.0",
+    "kivymd>=1.2.0",
 ]
 
 [project.scripts]

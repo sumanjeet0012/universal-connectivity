@@ -21,16 +21,16 @@ This is the Python implementation of the [Universal Connectivity][UNIV_CONN] app
 
 ## 🚀 Overview
 
-py-peer is a decentralized chat application that enables peer-to-peer communication without requiring central servers. Built on libp2p, it provides secure, direct communication between participants using modern networking protocols. It offers multiple interaction modes: a mobile-friendly Kivy interface, a terminal-based Textual TUI, a simple CLI mode, and a React frontend powered by a Tornado REST + WebSocket API.
+py-peer is a decentralized chat application that enables peer-to-peer communication without requiring central servers. Built on libp2p, it provides secure, direct communication between participants using modern networking protocols. It offers multiple interaction modes: a terminal-based Textual TUI, a simple CLI, a React frontend powered by a Tornado REST + WebSocket API, and an optional Kivy desktop/mobile-style UI.
 
-Kivy, Textual, and CLI modes run with direct in-process access to the HeadlessService. The React frontend is decoupled and communicates with HeadlessService through Tornado REST and WebSocket endpoints.
+Textual and CLI modes run with direct in-process access to the HeadlessService. The React frontend is decoupled and communicates with HeadlessService through Tornado REST and WebSocket endpoints. The Kivy UI is an optional extra (`pip install -e '.[kivy]'`) that shares the same in-process service; the core runtime, TUI, CLI, and API never import or require Kivy.
 
 ## 📸 Screenshots
 
-### Kivy Mobile-Friendly Interface (NEW!)
+### Kivy Interface (optional extra)
 ![py-peer Kivy UI](assets/images/py-peer-kivy.png)
 
-*The modern Kivy/KivyMD interface featuring WhatsApp-style navigation, topic-based conversations, and one-tap copy functionality for peer IDs and multiaddresses.*
+*The Kivy/KivyMD interface featuring WhatsApp-style navigation, topic-based conversations, and one-tap copy functionality for peer IDs and multiaddresses. Install the `kivy` extra to run it.*
 
 ### Textual TUI Interface
 ![py-peer Textual UI](assets/images/py-peer-textual-ui.png)
@@ -41,7 +41,7 @@ Kivy, Textual, and CLI modes run with direct in-process access to the HeadlessSe
 
 - **[libp2p](https://libp2p.io/)** - Modular peer-to-peer networking stack
 - **[Trio](https://trio.readthedocs.io/)** - Async/await framework for Python
-- **[KivyMD](https://kivymd.readthedocs.io/)** - Material Design mobile UI framework
+- **[KivyMD](https://kivymd.readthedocs.io/)** - Material Design UI framework (optional `kivy` extra)
 - **[Textual](https://textual.textualize.io/)** - Modern Terminal User Interface framework
 - **[Tornado](https://www.tornadoweb.org/)** - REST and WebSocket API server
 - **[React + Vite](https://vitejs.dev/)** - Modern web frontend for py-peer
@@ -51,7 +51,7 @@ Kivy, Textual, and CLI modes run with direct in-process access to the HeadlessSe
 
 ### Core Features
 - **Peer-to-Peer Chat** - Direct communication without central servers
-- **Multiple UI Modes** - Kivy mobile UI, Textual TUI, or simple CLI mode
+- **Multiple UI Modes** - Textual TUI, simple CLI, REST/WebSocket API, or the optional Kivy UI
 - **Real-time Messaging** - Instant message delivery through GossipSub
 - **Peer Discovery** - Automatic discovery of other peers in the network
 - **Cross-Platform** - Works on Linux, macOS, Windows, and mobile platforms
@@ -157,7 +157,7 @@ Kivy, Textual, and CLI modes run with direct in-process access to the HeadlessSe
 ### Components
 
 - **main.py** - Application entry point and argument parsing
-- **kivy_ui.py** - Modern mobile-friendly Kivy interface (NEW!)
+- **kivy_ui.py** - Kivy interface, shipped as the optional `kivy` extra
 - **ui.py** - Textual-based terminal user interface
 - **headless.py** - Background engine managing libp2p operations (the runtime's transport layer)
 - **app/** - Framework-independent `ApplicationRuntime` and services (peer, connection, messaging, discovery, identity, files, storage)
@@ -188,7 +188,7 @@ User Input → UI Thread → Queue → Async Thread (Trio)
 - **Python 3.12+**
 - **uv** (recommended) or pip package manager
 - Network connectivity for peer-to-peer communication
-- For Kivy UI: Additional system dependencies (see Installation)
+- For the optional Kivy UI: the `kivy` extra plus system SDL dependencies (see Installation)
 - For React frontend: **Node.js 18+** and npm
 - For RAG endpoint (`/api/v1/ask`): Groq API key + vector store build dependencies
 
@@ -240,9 +240,24 @@ source .venv/bin/activate  # Linux/macOS
 pip install -e .
 ```
 
-### Kivy UI Dependencies
+### Optional Kivy UI
 
-For the Kivy mobile interface, you may need additional system dependencies:
+Kivy is **not** installed by default and is not needed by the core runtime, the
+Textual TUI, the simple CLI, or the API server. Install it only if you want the
+`--kivy` interface:
+
+```bash
+# uv (installs the optional extra)
+uv sync --extra kivy
+
+# pip / editable install
+pip install -e '.[kivy]'
+```
+
+Without the extra, `python main.py --kivy` exits immediately with an install
+hint; nothing else changes.
+
+Kivy may also need system dependencies:
 
 **Linux (Ubuntu/Debian):**
 ```bash
@@ -272,11 +287,11 @@ brew install sdl2 sdl2_image sdl2_ttf sdl2_mixer
 ### Quick Start
 
 ```bash
-# Kivy UI (Mobile-friendly interface)
-python main.py --kivy --nick Alice
-
 # Textual TUI (Terminal interface)
 python main.py --ui --nick Bob
+
+# Kivy UI (optional extra; install it first, see above)
+python main.py --kivy --nick Alice
 
 # Simple CLI mode
 python main.py --nick Charlie
@@ -296,7 +311,7 @@ python main.py --api-routes
 | Option | Description | Example |
 |--------|-------------|---------|
 | `--nick NAME` | Set your nickname (required) | `--nick Alice` |
-| `--kivy` | Use Kivy mobile-friendly UI | `--kivy` |
+| `--kivy` | Use the optional Kivy UI (requires the `kivy` extra) | `--kivy` |
 | `--ui` | Use Textual TUI interface | `--ui` |
 | `--headless` | Run without UI (logs only) | `--headless` |
 | `-c, --connect ADDR` | Connect to specific peer | `-c /ip4/...` |
@@ -379,9 +394,11 @@ Notes:
 
 ## 🖥️ User Interfaces
 
-Kivy, Textual, and CLI run against the local in-process HeadlessService. React frontend clients connect over HTTP/WebSocket through the Tornado API layer.
+Textual and CLI run against the local in-process HeadlessService. React frontend clients connect over HTTP/WebSocket through the Tornado API layer. The Kivy UI runs the same in-process service but is installed separately.
 
-### 1. Kivy UI (Recommended for Mobile/Desktop)
+**Support policy:** the Textual TUI, simple CLI, headless mode, and Tornado API are supported core interfaces. The Kivy UI is an optional extra, is not installed by default, and is not covered by the automated UI tests. Android/iOS packaging is a separate, unstarted effort — the Kivy extra alone does not produce a mobile build.
+
+### 1. Kivy UI (optional extra)
 
 **Features:**
 - WhatsApp-style topic selector
@@ -680,13 +697,19 @@ python main.py --kivy --nick YourName --port 8081
 - Verify multiaddr format is correct
 
 **3. Kivy UI Not Starting**
+
+Kivy is an optional extra, so a fresh install does not include it:
 ```bash
-# Install system dependencies (Linux)
+# Install the extra (with uv: uv sync --extra kivy)
+pip install -e '.[kivy]'
+
+# Linux system dependencies if Kivy itself fails to build
 sudo apt-get install libsdl2-dev
 
-# Reinstall Kivy
-pip install --force-reinstall kivy kivymd
+# Reinstall the extra
+pip install --force-reinstall -e '.[kivy]'
 ```
+The error message from `python main.py --kivy` prints the exact command.
 
 **4. Messages Not Appearing**
 - Check if you're subscribed to the correct topic
@@ -824,7 +847,7 @@ We welcome contributions! Here's how:
 
 - [libp2p](https://libp2p.io/) - Peer-to-peer networking framework
 - [Trio](https://trio.readthedocs.io/) - Async framework
-- [Kivy](https://kivy.org/) & [KivyMD](https://kivymd.readthedocs.io/) - Mobile UI framework
+- [Kivy](https://kivy.org/) & [KivyMD](https://kivymd.readthedocs.io/) - Optional UI extra
 - [Textual](https://textual.textualize.io/) - Terminal UI framework
 - Universal Connectivity project contributors
 

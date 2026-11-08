@@ -1501,8 +1501,6 @@ dependencies = [
     { name = "base58" },
     { name = "groq" },
     { name = "janus" },
-    { name = "kivy" },
-    { name = "kivymd" },
     { name = "libp2p" },
     { name = "platformdirs" },
     { name = "protobuf" },
@@ -1513,13 +1511,19 @@ dependencies = [
     { name = "trio-asyncio" },
 ]
 
+[package.optional-dependencies]
+kivy = [
+    { name = "kivy" },
+    { name = "kivymd" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "base58" },
     { name = "groq", specifier = ">=1.0.0" },
     { name = "janus", specifier = ">=1.0.0" },
-    { name = "kivy", specifier = ">=2.3.0" },
-    { name = "kivymd", specifier = ">=1.2.0" },
+    { name = "kivy", marker = "extra == 'kivy'", specifier = ">=2.3.0" },
+    { name = "kivymd", marker = "extra == 'kivy'", specifier = ">=1.2.0" },
     { name = "libp2p", git = "https://github.com/sumanjeet0012/py-libp2p.git?branch=fix%2Fpeerstore-local-identity" },
     { name = "platformdirs", specifier = ">=4.0.0" },
     { name = "protobuf", specifier = ">=6.32.1,<7" },
@@ -1529,6 +1533,7 @@ requires-dist = [
     { name = "trio", specifier = ">=0.22.0" },
     { name = "trio-asyncio" },
 ]
+provides-extras = ["kivy"]
 
 [[package]]
 name = "pycairo"
