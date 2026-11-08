@@ -56,10 +56,10 @@ export default function ConnectionPanel({ isOpen, onClose }: ConnectionPanelProp
   }
 
   const copy = (text: string, cb: (v: boolean) => void) => {
-    navigator.clipboard.writeText(text).then(() => {
+    navigator.clipboard?.writeText(text).then(() => {
       cb(true)
       setTimeout(() => cb(false), 2000)
-    })
+    }).catch(() => { /* clipboard unavailable (e.g. insecure context) */ })
   }
 
   return (

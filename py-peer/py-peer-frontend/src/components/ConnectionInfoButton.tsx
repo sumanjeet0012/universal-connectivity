@@ -9,10 +9,10 @@ export default function ConnectionInfoButton() {
   if (!nodeInfo) return null
 
   const copyMultiaddr = () => {
-    navigator.clipboard.writeText(nodeInfo.multiaddr).then(() => {
+    navigator.clipboard?.writeText(nodeInfo.multiaddr).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    })
+    }).catch(() => { /* clipboard unavailable (e.g. insecure context) */ })
   }
 
   return (

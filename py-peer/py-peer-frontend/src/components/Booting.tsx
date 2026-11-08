@@ -7,12 +7,18 @@ export default function Booting({ error }: { error?: string }) {
       <h1 className="text-xl font-semibold text-gray-700">Universal Connectivity – py-peer</h1>
       {error ? (
         <div className="max-w-md rounded-lg bg-red-50 border border-red-200 p-4 text-sm text-red-700 text-center">
-          {error}
+          <p>{error}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-3 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 transition"
+          >
+            Retry
+          </button>
         </div>
       ) : (
         <div className="flex items-center gap-2 text-gray-500 text-sm">
           <Spinner className="h-4 w-4" />
-          Connecting to py-peer API on localhost:8765…
+          Connecting to the py-peer API…
         </div>
       )}
     </div>

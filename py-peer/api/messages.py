@@ -8,7 +8,7 @@ GET  /api/v1/messages/{topic}/unread   - unread count
 PUT  /api/v1/messages/{topic}/read     - mark all as read
 """
 
-from .base import BaseHandler
+from .base import BaseHandler, parse_string_field
 
 
 class SendDefaultMessageHandler(BaseHandler):
@@ -18,11 +18,17 @@ class SendDefaultMessageHandler(BaseHandler):
         if not self.require_ready():
             return
         body = self.get_json_body()
-        msg = body.get("message", "").strip()
-        if not msg:
-            self.send_error_response("'message' field is required.")
+        try:
+            msg = parse_string_field(body, "message", required=True)
+        except ValueError as e:
+            self.send_error_response(str(e))
             return
-        self.service.send_message(msg)
+        if not self.service.send_message(msg):
+            self.send_error_response(
+                "Failed to queue message — service is busy or not ready.",
+                status=503,
+            )
+            return
         self.send_success({"message": "Message queued for delivery"}, status=202)
 
 
@@ -41,6 +47,12 @@ class TopicMessagesHandler(BaseHandler):
         except ValueError:
             self.send_error_response("'limit' and 'offset' must be integers.")
             return
+        if not 1 <= limit <= 1000:
+            self.send_error_response("'limit' must be between 1 and 1000.")
+            return
+        if offset < 0:
+            self.send_error_response("'offset' must be zero or greater.")
+            return
 
         all_msgs = self.service.get_topic_messages(topic)
         page = all_msgs[offset: offset + limit]
@@ -56,9 +68,10 @@ class TopicMessagesHandler(BaseHandler):
         if not self.require_ready():
             return
         body = self.get_json_body()
-        msg = body.get("message", "").strip()
-        if not msg:
-            self.send_error_response("'message' field is required.")
+        try:
+            msg = parse_string_field(body, "message", required=True)
+        except ValueError as e:
+            self.send_error_response(str(e))
             return
 
         # Check topic is subscribed
@@ -70,7 +83,12 @@ class TopicMessagesHandler(BaseHandler):
             )
             return
 
-        self.service.send_message_to_topic(topic, msg)
+        if not self.service.send_message_to_topic(topic, msg):
+            self.send_error_response(
+                "Failed to queue message — service is busy or not ready.",
+                status=503,
+            )
+            return
         self.send_success({"message": "Message queued for delivery", "topic": topic}, status=202)
 
 

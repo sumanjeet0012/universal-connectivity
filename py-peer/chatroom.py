@@ -10,6 +10,7 @@ import logging
 import time
 import trio
 from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from typing import Set, Optional, AsyncIterator
 
 from libp2p.host.basic_host import BasicHost
@@ -18,9 +19,16 @@ from libp2p.pubsub.pubsub import Pubsub
 
 logger = logging.getLogger("chatroom")
 
-# Create a separate logger for system messages
+# Create a separate logger for system messages. Rotate the file: a long-running
+# peer must not keep appending to one unbounded file forever.
 system_logger = logging.getLogger("system_messages")
-system_handler = logging.FileHandler("system_messages.txt", mode='a')
+system_handler = RotatingFileHandler(
+    "system_messages.txt",
+    mode="a",
+    maxBytes=1_000_000,
+    backupCount=3,
+    encoding="utf-8",
+)
 system_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
 system_logger.addHandler(system_handler)
 system_logger.setLevel(logging.INFO)
@@ -32,6 +40,33 @@ CHAT_ROOM_BUF_SIZE = 128
 # Topics used in the chat system
 PUBSUB_DISCOVERY_TOPIC = "universal-connectivity-browser-peer-discovery"
 CHAT_TOPIC = "universal-connectivity"
+
+# Topics that are part of the protocol but are not user-facing chat channels.
+# The discovery topic carries protobuf peer/WebRTC announcements from browser
+# peers; treating it as chat exposes it as a channel and can display binary
+# payloads as messages.
+NON_CHAT_TOPICS = {PUBSUB_DISCOVERY_TOPIC}
+
+# Guardrails against a client creating unlimited channels.
+MAX_TOPIC_NAME_LENGTH = 128
+MAX_TOPICS = 100
+
+
+def _snapshot_keys(mapping, attempts: int = 3):
+    """
+    Copy a dict's keys from a thread that does not own the dict.
+
+    ``pubsub.peers`` and ``ChatRoom.subscriptions`` are mutated by the trio
+    thread while Tornado handlers read them. A plain ``list(mapping)`` can
+    raise RuntimeError if the dict changes size mid-copy, so retry the
+    cheap snapshot instead of leaking a 500 to the API client.
+    """
+    for _ in range(attempts):
+        try:
+            return list(mapping.keys())
+        except RuntimeError:
+            continue
+    return []
 
 
 @dataclass
@@ -65,6 +100,11 @@ class ChatRoom:
         
         # Use custom topic if provided, otherwise use default
         self.chat_topic = topic if topic else CHAT_TOPIC
+        if self.chat_topic in NON_CHAT_TOPICS:
+            raise ValueError(
+                f"Topic '{self.chat_topic}' is reserved for peer discovery "
+                "and cannot be used as the chat topic."
+            )
         
         # Subscriptions - now a dictionary to track all subscriptions
         self.subscriptions = {}  # topic_name -> subscription object
@@ -153,6 +193,11 @@ class ChatRoom:
     async def publish_to_topic(self, topic: str, message: str):
         """Publish a message to a specific topic."""
         try:
+            # The discovery topic is a protocol channel, not a chat channel.
+            if topic in NON_CHAT_TOPICS:
+                logger.warning(f"Refusing to publish chat to reserved topic: {topic}")
+                return False
+
             # Check if we're subscribed to this topic
             if topic not in self.subscriptions:
                 logger.warning(f"Not subscribed to topic: {topic}")
@@ -205,9 +250,17 @@ class ChatRoom:
             return True  # Default to accepting message on error
     
     async def _handle_topic_messages(self, topic_name: str, subscription):
-        """Handle incoming messages for any subscribed topic (including chat and discovery)."""
+        """Handle incoming messages for chat topics; drain protocol topics."""
         logger.debug(f"📨 Starting message handler for topic: {topic_name}")
-        
+
+        if topic_name in NON_CHAT_TOPICS:
+            # The discovery topic carries protobuf peer announcements, not
+            # chat. Keep consuming it so the subscription buffer does not fill
+            # up, but never store or display its payloads as messages.
+            async for _message in self._message_stream(subscription):
+                continue
+            return
+
         try:
             async for message in self._message_stream(subscription):
                 try:
@@ -393,16 +446,24 @@ class ChatRoom:
         logger.info("ChatRoom stopped")
     
     def get_connected_peers(self) -> Set[str]:
-        """Get list of connected peer IDs."""
-        return set(str(peer_id) for peer_id in self.pubsub.peers.keys())
+        """Get a snapshot of connected peer IDs."""
+        return {str(peer_id) for peer_id in _snapshot_keys(self.pubsub.peers)}
     
     def get_peer_count(self) -> int:
         """Get number of connected peers."""
         return len(self.pubsub.peers)
     
     def get_subscribed_topics(self) -> Set[str]:
-        """Get list of all subscribed topics."""
-        return set(self.subscriptions.keys())
+        """Get user-facing (chat) subscriptions, excluding protocol topics."""
+        return {
+            topic
+            for topic in _snapshot_keys(self.subscriptions)
+            if topic not in NON_CHAT_TOPICS
+        }
+
+    def get_all_subscriptions(self) -> Set[str]:
+        """Get every pubsub subscription, including protocol-only topics."""
+        return set(_snapshot_keys(self.subscriptions))
     
     async def subscribe_to_topic(self, topic_name: str) -> bool:
         """
@@ -415,8 +476,23 @@ class ChatRoom:
             True if subscription was successful, False otherwise
         """
         try:
+            if not isinstance(topic_name, str) or not topic_name:
+                logger.warning("Refusing to subscribe to an empty/non-string topic")
+                return False
+            if len(topic_name) > MAX_TOPIC_NAME_LENGTH:
+                logger.warning(
+                    f"Refusing to subscribe to oversized topic "
+                    f"({len(topic_name)} > {MAX_TOPIC_NAME_LENGTH} chars)"
+                )
+                return False
+            if topic_name in NON_CHAT_TOPICS:
+                logger.warning(f"Refusing to subscribe to reserved topic: {topic_name}")
+                return False
             if topic_name in self.subscriptions:
                 logger.warning(f"Already subscribed to topic: {topic_name}")
+                return False
+            if len(self.get_subscribed_topics()) >= MAX_TOPICS:
+                logger.warning(f"Refusing topic subscription: limit {MAX_TOPICS} reached")
                 return False
             
             logger.info(f"Subscribing to new topic: {topic_name}")

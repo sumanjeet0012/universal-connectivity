@@ -48,22 +48,18 @@ class ServiceStopHandler(BaseHandler):
             self.send_error_response("No service attached.", status=503)
             return
         # Schedule the stop coroutine without blocking the handler
-        asyncio.get_event_loop().call_soon(self._do_stop)
+        asyncio.get_running_loop().call_soon(self._do_stop)
         self.send_success({"message": "Stop signal sent to HeadlessService."})
 
     def _do_stop(self):
-        """Fire-and-forget the stop signal via threading."""
-        import threading
-        def _stop():
-            import trio
-            # The service's stop_event is a trio.Event; set it from another
-            # thread via the sync API if available, otherwise notify via a flag.
-            try:
-                self.service.running = False
-                self.service.stop_event.set()
-            except Exception:
-                self.service.running = False
-        threading.Thread(target=_stop, daemon=True).start()
+        """Signal the headless service to stop.
+
+        This runs on the Tornado thread while the host is owned by the trio
+        thread. ``request_stop()`` only sets a thread-safe event; the trio
+        thread observes it and performs ChatRoom/Bitswap/queue teardown in
+        ``HeadlessService.start()``'s ``finally`` block.
+        """
+        self.service.request_stop()
 
 
 class ServiceBootstrapHandler(BaseHandler):

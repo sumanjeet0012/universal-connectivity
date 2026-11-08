@@ -9,7 +9,10 @@ GET    /api/v1/peers/{peer_id}        - info for a specific peer
 GET    /api/v1/peers/{peer_id}/identify - identify protocol info (from cache)
 """
 
-from .base import BaseHandler
+import multiaddr
+from libp2p.peer.peerinfo import info_from_p2p_addr
+
+from .base import BaseHandler, parse_string_field
 
 
 class PeerListHandler(BaseHandler):
@@ -57,9 +60,20 @@ class PeerConnectHandler(BaseHandler):
         if not self.require_ready():
             return
         body = self.get_json_body()
-        maddr = body.get("multiaddr", "").strip()
-        if not maddr:
-            self.send_error_response("'multiaddr' field is required.")
+        try:
+            maddr = parse_string_field(body, "multiaddr", required=True)
+        except ValueError as e:
+            self.send_error_response(str(e))
+            return
+        # Validate before queueing: otherwise the API reports 202 for a typo and
+        # the failure only appears later as a system message.
+        try:
+            info_from_p2p_addr(multiaddr.Multiaddr(maddr))
+        except Exception:
+            self.send_error_response(
+                "Invalid multiaddr — expected /ip4/<host>/tcp/<port>/p2p/<peer-id>.",
+                status=400,
+            )
             return
         queued = self.service.connect_to_peer(maddr)
         if queued:
@@ -74,9 +88,15 @@ class PeerDetailHandler(BaseHandler):
     def get(self, peer_id):
         if not self.require_ready():
             return
+        from libp2p.peer.id import ID
+
         try:
-            from libp2p.peer.id import ID
             pid = ID.from_base58(peer_id)
+        except Exception:
+            self.send_error_response("Invalid peer ID.", status=400)
+            return
+
+        try:
             pinfo = self.service.host.get_peerstore().peer_info(pid)
             addrs = [str(a) for a in pinfo.addrs] if pinfo.addrs else []
         except Exception as e:

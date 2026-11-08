@@ -116,8 +116,10 @@ def _make_app(service, vectorstore=None) -> tornado.web.Application:
     return tornado.web.Application(
         routes,
         debug=False,
-        # Allow large file uploads (100 MB)
-        max_body_size=100 * 1024 * 1024,
+        # The upload handler enforces a 25 MB per-file cap. Keep the absolute
+        # body limit close to it so an unauthenticated request cannot make the
+        # process buffer 100 MB before the handler rejects it.
+        max_body_size=32 * 1024 * 1024,
     )
 
 
@@ -136,8 +138,24 @@ class TornadoServer:
     def __init__(self, service, port: int = DEFAULT_API_PORT):
         self.service = service
         self.port = port
+        # Capture the main thread's IOLoop now; calling IOLoop.current() from the
+        # headless thread later would return that thread's loop instead.
+        self._ioloop = tornado.ioloop.IOLoop.current()
+        if hasattr(service, "on_stopped"):
+            service.on_stopped = self._on_service_stopped
         vectorstore = load_vectorstore()
         self._app = _make_app(service, vectorstore=vectorstore)
+
+    def _on_service_stopped(self):
+        """Shut the API down once the headless service has stopped."""
+        try:
+            self._ioloop.add_callback(self._ioloop.stop)
+        except Exception:
+            logger.exception("Failed to stop the Tornado IOLoop")
+
+    def stop(self):
+        """Stop the IOLoop. Safe to call from any thread (e.g. a signal handler)."""
+        self._ioloop.add_callback(self._ioloop.stop)
 
     def start(self):
         """Start Tornado — blocks until the process is killed."""
@@ -146,10 +164,10 @@ class TornadoServer:
         logger.info(f"    REST : http://localhost:{self.port}/api/v1/node/info")
         logger.info(f"    WS   : ws://localhost:{self.port}/ws/messages")
         try:
-            tornado.ioloop.IOLoop.current().start()
+            self._ioloop.start()
         except KeyboardInterrupt:
             logger.info("Tornado server stopped.")
-            tornado.ioloop.IOLoop.current().stop()
+            self._ioloop.stop()
 
 
 def _print_routes(port=DEFAULT_API_PORT):

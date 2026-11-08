@@ -1,3 +1,6 @@
 *.pyc
 .bin
 .env
+.venv/
+system_messages.txt
+__pycache__/

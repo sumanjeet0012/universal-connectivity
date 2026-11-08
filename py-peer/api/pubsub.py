@@ -17,11 +17,7 @@ class PubSubPeersHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        try:
-            peers = [str(p) for p in self.service.pubsub.peers.keys()]
-        except Exception as e:
-            self.send_error_response(f"Could not read pubsub peers: {e}", status=500)
-            return
+        peers = self.service.get_pubsub_peers()
         self.send_success({"peers": peers, "count": len(peers)})
 
 
@@ -31,16 +27,8 @@ class PubSubMeshHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        try:
-            raw_mesh = getattr(self.service.gossipsub, "mesh", {})
-            mesh = {
-                topic: [str(p) for p in peers]
-                for topic, peers in raw_mesh.items()
-            }
-            total_peers = sum(len(v) for v in mesh.values())
-        except Exception as e:
-            self.send_error_response(f"Could not read GossipSub mesh: {e}", status=500)
-            return
+        mesh = self.service.get_gossipsub_mesh()
+        total_peers = sum(len(v) for v in mesh.values())
         self.send_success({
             "mesh": mesh,
             "topic_count": len(mesh),
@@ -54,15 +42,7 @@ class PubSubFanoutHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        try:
-            raw = getattr(self.service.gossipsub, "fanout", {})
-            fanout = {
-                topic: [str(p) for p in peers]
-                for topic, peers in raw.items()
-            }
-        except Exception as e:
-            self.send_error_response(f"Could not read GossipSub fanout: {e}", status=500)
-            return
+        fanout = self.service.get_gossipsub_fanout()
         self.send_success({"fanout": fanout})
 
 
@@ -91,5 +71,5 @@ class PubSubSubscriptionsHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        topics = list(self.service.get_subscribed_topics())
+        topics = sorted(self.service.get_all_pubsub_topics())
         self.send_success({"subscriptions": topics, "count": len(topics)})

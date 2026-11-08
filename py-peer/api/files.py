@@ -8,8 +8,30 @@ POST /api/v1/files/download        - download a file by CID hex
 POST /api/v1/files/upload          - upload via multipart and share to a topic
 """
 
+import asyncio
 import os
-from .base import BaseHandler
+
+from .base import BaseHandler, parse_string_field
+
+# Cap an individual upload. Tornado still has a global body limit, but this
+# keeps the in-memory multipart buffer and the on-disk write bounded.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _is_within(path, directory):
+    """True when ``path`` resolves inside ``directory`` (symlinks followed)."""
+    try:
+        path_real = os.path.realpath(path)
+        dir_real = os.path.realpath(directory)
+        return os.path.commonpath([dir_real, path_real]) == dir_real
+    except (OSError, ValueError):
+        return False
+
+
+def _write_bytes(path, data):
+    """Blocking write, executed in a worker thread by the upload handler."""
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 class SharedFilesHandler(BaseHandler):
@@ -18,10 +40,7 @@ class SharedFilesHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        files = [
-            {"cid": cid, **meta}
-            for cid, meta in self.service.shared_files.items()
-        ]
+        files = self.service.get_shared_files()
         self.send_success({"shared_files": files, "count": len(files)})
 
 
@@ -31,11 +50,11 @@ class SharedFileDetailHandler(BaseHandler):
     def get(self, cid):
         if not self.require_ready():
             return
-        meta = self.service.shared_files.get(cid)
+        meta = self.service.get_shared_file(cid)
         if not meta:
             self.send_error_response(f"No shared file with CID '{cid}'.", status=404)
             return
-        self.send_success({"cid": cid, **meta})
+        self.send_success(meta)
 
 
 class ShareFileHandler(BaseHandler):
@@ -45,17 +64,27 @@ class ShareFileHandler(BaseHandler):
         if not self.require_ready():
             return
         body = self.get_json_body()
-        file_path = body.get("file_path", "").strip()
-        topic = body.get("topic", "").strip()
+        try:
+            file_path = parse_string_field(body, "file_path", required=True)
+            topic = parse_string_field(body, "topic", required=True)
+        except ValueError as e:
+            self.send_error_response(str(e))
+            return
 
-        if not file_path:
-            self.send_error_response("'file_path' is required.")
-            return
-        if not topic:
-            self.send_error_response("'topic' is required.")
-            return
-        if not os.path.exists(file_path):
+        file_path = os.path.expanduser(file_path)
+        if not os.path.isfile(file_path):
             self.send_error_response(f"File not found: {file_path}", status=400)
+            return
+        # The API is unauthenticated and CORS-open. Never let a remote caller
+        # name an arbitrary host file (e.g. ~/.ssh/id_ed25519) and have the
+        # node publish it to a pubsub topic. The supported local-file sharing
+        # path is the download directory (uploaded/downloaded files); local
+        # desktop UIs call HeadlessService.share_file() directly instead.
+        if not _is_within(file_path, self.service.download_dir):
+            self.send_error_response(
+                "'file_path' must be inside the peer's download directory.",
+                status=400,
+            )
             return
 
         subscribed = self.service.get_subscribed_topics()
@@ -84,11 +113,11 @@ class DownloadFileHandler(BaseHandler):
         if not self.require_ready():
             return
         body = self.get_json_body()
-        cid = body.get("file_cid", "").strip()
-        name = body.get("file_name", "unknown").strip()
-
-        if not cid:
-            self.send_error_response("'file_cid' is required.")
+        try:
+            cid = parse_string_field(body, "file_cid", required=True)
+            name = parse_string_field(body, "file_name", default="unknown")
+        except ValueError as e:
+            self.send_error_response(str(e))
             return
 
         queued = self.service.download_file(cid, name)
@@ -110,7 +139,7 @@ class UploadAndShareHandler(BaseHandler):
     Saves the file to the service's download_dir and queues a share.
     """
 
-    def post(self):
+    async def post(self):
         if not self.require_ready():
             return
 
@@ -123,9 +152,28 @@ class UploadAndShareHandler(BaseHandler):
             self.send_error_response("'file' form-data field is required.")
             return
 
+        # Validate the topic before writing anything to disk.
+        subscribed = self.service.get_subscribed_topics()
+        if topic not in subscribed:
+            self.send_error_response(
+                f"Not subscribed to topic '{topic}'. Subscribe first via POST /api/v1/topics.",
+                status=400,
+            )
+            return
+
         file_info = self.request.files["file"][0]
-        filename = file_info["filename"] or "upload"
+        # A multipart filename is attacker-controlled: strip any directory
+        # components so it cannot escape the download directory.
+        filename = os.path.basename(file_info["filename"] or "upload").strip()
+        if filename in ("", ".", ".."):
+            filename = "upload"
         file_data = file_info["body"]
+        if len(file_data) > MAX_UPLOAD_BYTES:
+            self.send_error_response(
+                f"Upload is too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).",
+                status=413,
+            )
+            return
 
         # Save to download_dir
         save_path = os.path.join(self.service.download_dir, filename)
@@ -135,17 +183,13 @@ class UploadAndShareHandler(BaseHandler):
         while os.path.exists(save_path):
             save_path = os.path.join(self.service.download_dir, f"{base}_{counter}{ext}")
             counter += 1
-
-        with open(save_path, "wb") as f:
-            f.write(file_data)
-
-        subscribed = self.service.get_subscribed_topics()
-        if topic not in subscribed:
-            self.send_error_response(
-                f"Not subscribed to topic '{topic}'. Subscribe first via POST /api/v1/topics.",
-                status=400,
-            )
+        if not _is_within(save_path, self.service.download_dir):
+            self.send_error_response("Invalid upload filename.", status=400)
             return
+
+        # Offload the write: a synchronous multi-megabyte write would block
+        # every API/WebSocket client on the single Tornado IOLoop thread.
+        await asyncio.to_thread(_write_bytes, save_path, file_data)
 
         queued = self.service.share_file(save_path, topic)
         if queued:
@@ -155,7 +199,6 @@ class UploadAndShareHandler(BaseHandler):
                     "filename": os.path.basename(save_path),
                     "size": len(file_data),
                     "topic": topic,
-                    "saved_path": save_path,
                 },
                 status=202,
             )

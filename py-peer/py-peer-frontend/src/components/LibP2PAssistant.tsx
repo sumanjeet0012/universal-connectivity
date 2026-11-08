@@ -15,8 +15,11 @@ async function askQuestion(question: string): Promise<{ answer: string; sources:
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question }),
   })
-  const data = await res.json()
-  if (!data.success) throw new Error(data.error ?? 'Unknown error')
+  const data = await res.json().catch(() => null)
+  if (!res.ok || !data?.success) {
+    const message = typeof data?.error === 'string' ? data.error : `Request failed (HTTP ${res.status}).`
+    throw new Error(message)
+  }
   return { answer: data.answer, sources: data.sources ?? [] }
 }
 

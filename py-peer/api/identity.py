@@ -16,7 +16,7 @@ class IdentityCacheListHandler(BaseHandler):
     def get(self):
         if not self.require_ready():
             return
-        cache = self.service.peer_info_cache
+        cache = self.service.get_peer_info_cache_snapshot()
         result = {}
         for peer_id, info in cache.items():
             result[peer_id] = {
@@ -35,7 +35,7 @@ class IdentityPeerHandler(BaseHandler):
     def get(self, peer_id):
         if not self.require_ready():
             return
-        info = self.service.peer_info_cache.get(peer_id)
+        info = self.service.get_peer_info(peer_id)
         if not info:
             self.send_error_response(
                 f"No cached identify info for peer '{peer_id[:16]}...'. "
@@ -79,8 +79,7 @@ class IdentityCacheDeleteHandler(BaseHandler):
     def delete(self, peer_id):
         if not self.require_ready():
             return
-        if peer_id in self.service.peer_info_cache:
-            del self.service.peer_info_cache[peer_id]
+        if self.service.delete_peer_info(peer_id):
             self.send_success({"message": f"Cache entry for '{peer_id[:16]}...' deleted."})
         else:
             self.send_error_response(

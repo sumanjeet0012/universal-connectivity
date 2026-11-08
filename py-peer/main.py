@@ -8,6 +8,7 @@ It handles argument parsing and coordinates between the headless service and UI 
 
 import argparse
 import logging
+import signal
 import sys
 import time
 import traceback
@@ -66,18 +67,88 @@ def run_headless_in_thread(headless_service, ready_event):
     thread = threading.Thread(target=run_service, daemon=True)
     thread.start()
     
-    # Wait for the service to be ready
+    # Wait for the service to be ready. Also break out as soon as the service
+    # reports a fatal startup failure: otherwise a bad port/seed/announce
+    # address makes the process sit idle for the full 30 seconds.
     max_wait = 30  # Maximum wait time in seconds
     waited = 0
-    while not headless_service.ready and waited < max_wait:
+    while (
+        not headless_service.ready
+        and not getattr(headless_service, "failed", False)
+        and waited < max_wait
+    ):
         time.sleep(0.1)
         waited += 0.1
-    
+
+    if getattr(headless_service, "failed", False):
+        raise RuntimeError("Headless service failed to start")
     if not headless_service.ready:
         raise RuntimeError("Headless service failed to start within timeout")
     
     logger.info("✅ Headless service is ready in background thread")
     return thread
+
+
+def stop_headless_and_join(headless_service, thread, timeout=10.0):
+    """Request shutdown and wait for the trio thread to finish cleanup.
+
+    UI modes and the API adapter run the service on a daemon thread. Without
+    this call the process exits via ``os._exit`` semantics and the host,
+    ChatRoom, Bitswap client, and queues are never closed. ``request_stop()``
+    only sets an event; the owning trio thread performs teardown in
+    ``HeadlessService.start()``'s ``finally`` block.
+    """
+    if headless_service is None:
+        return
+    request_stop = getattr(headless_service, "request_stop", None)
+    if request_stop is not None:
+        request_stop()
+    else:  # pragma: no cover - defensive for test doubles
+        headless_service.stop_event.set()
+    if thread is None:
+        return
+    thread.join(timeout)
+    if thread.is_alive():
+        logger.warning(
+            "Headless service thread did not stop within %.1fs", timeout
+        )
+
+
+def install_shutdown_signal_handlers(headless_service, on_signal=None):
+    """Map SIGINT/SIGTERM to a graceful stop request.
+
+    Must run on the main thread. Returns the handlers that were replaced so
+    the caller can restore them. ``on_signal`` runs after ``request_stop()``
+    and is used by API mode to wake the Tornado IOLoop immediately.
+    """
+    previous = {}
+
+    def _handler(signum, frame):
+        logger.info(
+            f"Received signal {signum}; requesting graceful shutdown..."
+        )
+        headless_service.request_stop()
+        if on_signal is not None:
+            try:
+                on_signal()
+            except Exception:
+                logger.exception("Error in shutdown signal callback")
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous[sig] = signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            # Not on the main thread, or the signal is unsupported here.
+            pass
+    return previous
+
+
+def restore_signal_handlers(previous):
+    for sig, handler in previous.items():
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
 
 
 async def main_async(args):
@@ -92,6 +163,7 @@ async def main_async(args):
     headless_service = HeadlessService(
         nickname=nickname,
         port=args.port,
+        announce_host=args.announce_host,
         connect_addrs=args.connect,
         strict_signing=strict_signing,
         seed=args.seed,
@@ -100,9 +172,15 @@ async def main_async(args):
     
     try:
         if args.headless:
-            # Run in headless mode
+            # Run in headless mode. There is no UI to handle Ctrl-C, so map
+            # SIGINT/SIGTERM to a stop request and let start()'s finally
+            # block perform the graceful teardown.
             logger.info("Starting headless service...")
-            await headless_service.start()
+            previous_handlers = install_shutdown_signal_handlers(headless_service)
+            try:
+                await headless_service.start()
+            finally:
+                restore_signal_handlers(previous_handlers)
         elif args.ui:
             # Return service configuration for UI mode
             return headless_service
@@ -164,7 +242,9 @@ async def monitor_message_queues(headless_service):
     
     logger.info("📡 Starting message queue monitoring...")
     
-    while True:
+    # Exit as soon as shutdown is requested; otherwise the nursery in
+    # run_simple_interactive waits forever after the user types "quit".
+    while not headless_service.stop_event.is_set():
         try:
             # Check message queue
             try:
@@ -290,6 +370,15 @@ def main():
         help="Port to listen on",
         default=0
     )
+
+    parser.add_argument(
+        "--announce-host",
+        type=str,
+        default="127.0.0.1",
+        dest="announce_host",
+        help="Host advertised in this peer's multiaddr (default: 127.0.0.1; "
+             "use your LAN IP so peers on other machines can dial it)"
+    )
     
     parser.add_argument(
         "-v", "--verbose",
@@ -362,6 +451,7 @@ def main():
             headless_service = HeadlessService(
                 nickname=nickname,
                 port=args.port,
+                announce_host=args.announce_host,
                 connect_addrs=args.connect,
                 strict_signing=strict_signing,
                 seed=args.seed,
@@ -378,7 +468,23 @@ def main():
             from tornado_server import TornadoServer, _print_routes
             _print_routes(args.api_port)
             server = TornadoServer(headless_service, port=args.api_port)
-            server.start()  # blocks until Ctrl-C
+            previous_handlers = install_shutdown_signal_handlers(
+                headless_service, on_signal=server.stop
+            )
+            try:
+                server.start()  # blocks until Ctrl-C or the headless service stops
+            finally:
+                restore_signal_handlers(previous_handlers)
+                # Covers /service/stop, Ctrl-C, SIGTERM, and adapter failures
+                # (for example a bind conflict) so the peer listener never
+                # outlives the API process.
+                stop_headless_and_join(headless_service, headless_thread)
+
+            # A clean /service/stop exits 0; a crashed headless thread exits 1
+            # so systemd (Restart=on-failure) can bring the node back.
+            if getattr(headless_service, "failed", False):
+                logger.error("Headless service failed; exiting with status 1.")
+                sys.exit(1)
 
         elif args.kivy:
             # Configure logging for Kivy mode (no console output)
@@ -395,6 +501,7 @@ def main():
             headless_service = HeadlessService(
                 nickname=nickname,
                 port=args.port,
+                announce_host=args.announce_host,
                 connect_addrs=args.connect,
                 strict_signing=strict_signing,
                 seed=args.seed,
@@ -408,17 +515,22 @@ def main():
             
             logger.info("Starting Kivy UI in main thread...")
             
-            # Import kivy_ui here to avoid issues if kivy is not installed
             try:
-                from kivy_ui import run_kivy_ui
-            except ImportError as e:
-                logger.error("Failed to import kivy_ui. Make sure Kivy and KivyMD are installed.")
-                logger.error(f"Error: {e}")
-                logger.error("Install with: pip install kivy kivymd")
-                sys.exit(1)
-            
-            # Run Kivy UI - this will block until UI exits
-            run_kivy_ui(headless_service)
+                # Import kivy_ui here to avoid issues if kivy is not installed
+                try:
+                    from kivy_ui import run_kivy_ui
+                except ImportError as e:
+                    logger.error("Failed to import kivy_ui. Make sure Kivy and KivyMD are installed.")
+                    logger.error(f"Error: {e}")
+                    logger.error("Install with: pip install kivy kivymd")
+                    sys.exit(1)
+
+                # Run Kivy UI - this will block until UI exits
+                run_kivy_ui(headless_service)
+            finally:
+                # Tear the peer down instead of letting the daemon thread die
+                # with the process.
+                stop_headless_and_join(headless_service, headless_thread)
             
         elif args.ui:
             # Configure logging for UI mode (no console output)
@@ -435,6 +547,7 @@ def main():
             headless_service = HeadlessService(
                 nickname=nickname,
                 port=args.port,
+                announce_host=args.announce_host,
                 connect_addrs=args.connect,
                 strict_signing=strict_signing,
                 seed=args.seed,
@@ -448,15 +561,20 @@ def main():
             
             logger.info("Starting Textual UI in main thread...")
             
-            # Create and run UI in main thread
-            ui = ChatUI(
-                headless_service=headless_service,
-                message_queue=headless_service.get_message_queue(),
-                system_queue=headless_service.get_system_queue()
-            )
-            
-            # Run UI - this will block until UI exits
-            ui.run()
+            try:
+                # Create and run UI in main thread
+                ui = ChatUI(
+                    headless_service=headless_service,
+                    message_queue=headless_service.get_message_queue(),
+                    system_queue=headless_service.get_system_queue()
+                )
+
+                # Run UI - this will block until UI exits
+                ui.run()
+            finally:
+                # Tear the peer down instead of letting the daemon thread die
+                # with the process.
+                stop_headless_and_join(headless_service, headless_thread)
             
         else:
             # Configure logging for non-UI mode (console output enabled)

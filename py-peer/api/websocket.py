@@ -11,6 +11,7 @@ import json
 import time
 import logging
 import asyncio
+from queue import Empty
 
 import tornado.websocket
 
@@ -73,6 +74,21 @@ class MessageStreamHandler(BaseWebSocketHandler):
     def initialize(self, service):
         super().initialize(service)
         self._topic_filter: str | None = None
+        self._sub_queue = None
+
+    def open(self):
+        # Every WebSocket client gets its own queue: the shared message_queue is
+        # single-consumer, so multiple tabs would otherwise steal messages from
+        # each other instead of all receiving them.
+        if self.service:
+            self._sub_queue = self.service.register_subscriber("message")
+        super().open()
+
+    def on_close(self):
+        super().on_close()
+        if self._sub_queue is not None and self.service:
+            self.service.unregister_subscriber("message", self._sub_queue)
+            self._sub_queue = None
 
     def on_message(self, raw):
         try:
@@ -92,8 +108,7 @@ class MessageStreamHandler(BaseWebSocketHandler):
         while self._running and not (self.service and self.service.ready):
             await asyncio.sleep(0.2)
 
-        mq = self.service.get_message_queue()
-        if not mq:
+        if self._sub_queue is None:
             return
 
         while self._running:
@@ -101,13 +116,13 @@ class MessageStreamHandler(BaseWebSocketHandler):
                 # Drain all available messages
                 while True:
                     try:
-                        msg = mq.sync_q.get_nowait()
-                        # Apply optional topic filter
-                        if self._topic_filter and msg.get("topic") != self._topic_filter:
-                            continue
-                        self._safe_write({"event": msg.get("type", "message"), "data": msg})
-                    except Exception:
+                        msg = self._sub_queue.sync_q.get_nowait()
+                    except Empty:
                         break
+                    # Apply optional topic filter
+                    if self._topic_filter and msg.get("topic") != self._topic_filter:
+                        continue
+                    self._safe_write({"event": msg.get("type", "message"), "data": msg})
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 break
@@ -122,22 +137,36 @@ class MessageStreamHandler(BaseWebSocketHandler):
 class SystemStreamHandler(BaseWebSocketHandler):
     """Streams system events and service notifications."""
 
+    def initialize(self, service):
+        super().initialize(service)
+        self._sub_queue = None
+
+    def open(self):
+        if self.service:
+            self._sub_queue = self.service.register_subscriber("system")
+        super().open()
+
+    def on_close(self):
+        super().on_close()
+        if self._sub_queue is not None and self.service:
+            self.service.unregister_subscriber("system", self._sub_queue)
+            self._sub_queue = None
+
     async def _push_loop(self):
         while self._running and not (self.service and self.service.ready):
             await asyncio.sleep(0.2)
 
-        sq = self.service.get_system_queue()
-        if not sq:
+        if self._sub_queue is None:
             return
 
         while self._running:
             try:
                 while True:
                     try:
-                        msg = sq.sync_q.get_nowait()
-                        self._safe_write({"event": "system_message", "data": msg})
-                    except Exception:
+                        msg = self._sub_queue.sync_q.get_nowait()
+                    except Empty:
                         break
+                    self._safe_write({"event": "system_message", "data": msg})
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 break
@@ -191,10 +220,9 @@ class MeshUpdateHandler(BaseWebSocketHandler):
 
         while self._running:
             try:
-                raw_mesh = getattr(self.service.gossipsub, "mesh", {})
                 mesh = {
-                    topic: sorted(str(p) for p in peers)
-                    for topic, peers in raw_mesh.items()
+                    topic: sorted(peers)
+                    for topic, peers in self.service.get_gossipsub_mesh().items()
                 }
                 self._safe_write({
                     "event": "mesh_update",

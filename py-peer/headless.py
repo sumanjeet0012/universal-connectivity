@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 import traceback
 import multiaddr
@@ -16,14 +17,14 @@ import janus
 import trio
 import trio_asyncio
 import hashlib
-from queue import Empty
+from queue import Empty, Full
 from typing import List, Dict, Any, Set
 from libp2p.discovery.bootstrap import BootstrapDiscovery
 from libp2p.kad_dht.kad_dht import (
     DHTMode,
     KadDHT,
 )
-from libp2p import new_host
+from libp2p import new_host, IHost
 from libp2p.crypto.ed25519 import create_new_key_pair
 from libp2p.pubsub.gossipsub import GossipSub
 from libp2p.pubsub.pubsub import Pubsub
@@ -40,7 +41,13 @@ from libp2p.protocol_muxer.exceptions import (
 from libp2p.host.exceptions import (
     StreamFailure,
 )
-from chatroom import ChatRoom, ChatMessage
+from chatroom import (
+    ChatRoom,
+    ChatMessage,
+    PUBSUB_DISCOVERY_TOPIC,
+    MAX_TOPIC_NAME_LENGTH,
+    MAX_TOPICS,
+)
 from libp2p.bitswap import BitswapClient, MemoryBlockStore
 from libp2p.bitswap.dag import MerkleDag
 from libp2p.network.config import ConnectionConfig
@@ -52,6 +59,15 @@ DEFAULT_DOWNLOAD_DIR = os.path.expanduser("~/Downloads")
 
 DEFAULT_SEED = "py-peer"  # Default seed for deterministic peer ID generation
 
+# Resource bounds. The API and the network are untrusted inputs: without caps
+# a slow client, a busy topic, or a message flood can grow these structures
+# until the peer is OOM-killed.
+MAX_TOPIC_MESSAGES = 1000        # stored history per topic
+MAX_LEGACY_QUEUE = 1024          # UI compatibility queue
+MAX_OUTGOING_QUEUE = 1024        # API/UI -> chat publisher
+MAX_REQUEST_QUEUE = 256          # topic/peer requests
+MAX_FILE_QUEUE = 64              # file share/download requests
+
 logger = logging.getLogger("headless")
 
 # Constants
@@ -59,10 +75,16 @@ DISCOVERY_SERVICE_TAG = "universal-connectivity"
 PROTOCOL_ID_LIST = [PROTOCOL_ID, PROTOCOL_ID_V11, PROTOCOL_ID_V12]
 DEFAULT_PORT = 9095
 
+
+def _write_bytes(path: str, data: bytes) -> None:
+    """Blocking file write, called from a worker thread when possible."""
+    with open(path, "wb") as f:
+        f.write(data)
+
 # Bootstrap nodes for peer discovery
 BOOTSTRAP_PEERS = [
     "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa", 
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
     "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zp7ykQCj2gRNdrFeqQ1vG13rMb4sPS",
     "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
     "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
@@ -86,17 +108,21 @@ class HeadlessService:
     Headless service that manages libp2p components and provides data to UI through queues.
     """
 
-    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None):
+    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1"):
         self.nickname = nickname
         self.port = port if port != 0 else 4001
         self.connect_addrs = connect_addrs or []
+        # Host advertised in the multiaddr shared with other peers. The listen socket
+        # binds 0.0.0.0, but 0.0.0.0 is not a valid dial target, so advertise a
+        # concrete address instead (override with --announce-host for LAN access).
+        self.announce_host = announce_host
         self.ui_mode = ui_mode  # Flag to control logging behavior
         self.strict_signing = strict_signing  # Flag to control message signing
         self.seed = seed if seed else DEFAULT_SEED  # Seed string for deterministic peer ID (default: 'py-peer')
         self.topic = topic  # Custom topic to use instead of default
 
         # libp2p components
-        self.host = None
+        self.host : IHost = None
         self.pubsub = None
         self.gossipsub = None
         self.dht = None
@@ -120,6 +146,12 @@ class HeadlessService:
         self.peer_connection_queue = None  # UI sends peer connection requests
         self.file_share_queue = None  # UI sends file sharing requests
         self.file_download_queue = None  # UI sends file download requests
+
+        # Per-WebSocket-client fan-out queues. The single message_queue above is
+        # consumed by whichever client polls first; API WebSocket clients each
+        # register their own queue so every client sees every message.
+        self.message_subscribers = set()
+        self.system_subscribers = set()
         
         # Per-topic message storage
         self.topic_messages = {}  # {topic: [{'message': msg, 'timestamp': ts, 'read': bool}]}
@@ -133,35 +165,65 @@ class HeadlessService:
         # Peer information storage for identify protocol
         self.peer_info_cache = {}  # Store peer info retrieved through identify
         
-        # Events for synchronization
+        # Events for synchronization. stop_event must be settable from the
+        # Tornado/API thread, so it is a threading.Event rather than a trio.Event.
         self.ready_event = trio.Event()
-        self.stop_event = trio.Event()
+        self.stop_event = threading.Event()
         
+        # Optional callback fired once the service has fully stopped, so hosts
+        # such as the Tornado API server can shut themselves down too.
+        self.on_stopped = None
+        # True when the service died from an error (as opposed to a clean stop),
+        # so the process can exit non-zero and be restarted by its supervisor.
+        self.failed = False
+
+        # Lifecycle ownership. start() may run at most once per instance, and
+        # the async teardown runs exactly once from start()'s finally block,
+        # on the trio thread that owns the host.
+        self._started = False
+        self._shutdown_done = False
+
+        # Guards shared state that is written by the trio thread and read by
+        # Tornado handlers (topic history, shared files, identify cache) and
+        # the WebSocket subscriber sets. Python's GIL makes individual dict
+        # operations atomic, but not iteration or check-then-act sequences.
+        self._state_lock = threading.RLock()
+        self._subscribers_lock = threading.RLock()
+
         if not ui_mode:  # Only log initialization if not in UI mode
             logger.info(f"HeadlessService initialized - nickname: {nickname}, port: {self.port}, strict_signing: {strict_signing}, seed: {self.seed}")
     
     async def monitor_peers(self):
         while True:
-            logger.info(f"Connected peers are: {len(self.host.get_connected_peers())}")
-            logger.info(f"Peers in peer store are: {len(self.host.get_peerstore().peers_with_addrs())}")
-            logger.info(f"Peers in routing table are: {len(self.dht.routing_table.get_peer_ids())}")
-            logger.info(f"Peers in pubsub are: {len(self.pubsub.peers.keys())}")
+            try:
+                logger.info(f"Connected peers are: {len(self.host.get_connected_peers())}")
+                logger.info(f"Peers in peer store are: {len(self.host.get_peerstore().peers_with_addrs())}")
+                logger.info(f"Peers in routing table are: {len(self.dht.routing_table.get_peer_ids())}")
+                logger.info(f"Peers in pubsub are: {len(self.pubsub.peers.keys())}")
+            except Exception as e:
+                # A status-logging failure must never take down the node.
+                logger.warning(f"Peer monitor error: {e}")
             await trio.sleep(5)
 
     async def start(self):
         """Start the headless service."""
+        if self._started:
+            raise RuntimeError(
+                "HeadlessService.start() has already been called on this instance"
+            )
+        self._started = True
         logger.info("Starting headless service...")
         
         try:
             # Create queues for communication with UI
             logger.debug("Creating message queues...")
-            self.message_queue = janus.Queue()      # Messages from headless to UI
-            self.system_queue = janus.Queue()       # System messages from headless to UI  
-            self.outgoing_queue = janus.Queue()     # Messages from UI to headless
-            self.topic_subscription_queue = janus.Queue()  # Topic subscription requests from UI
-            self.peer_connection_queue = janus.Queue()  # Peer connection requests from UI
-            self.file_share_queue = janus.Queue()  # File sharing requests from UI
-            self.file_download_queue = janus.Queue()  # File download requests from UI
+            self.message_queue = janus.Queue(maxsize=MAX_LEGACY_QUEUE)  # Messages from headless to UI
+            self.system_queue = janus.Queue(maxsize=MAX_LEGACY_QUEUE)   # System messages from headless to UI
+            self.outgoing_queue = janus.Queue(maxsize=MAX_OUTGOING_QUEUE)  # Messages from UI to headless
+            self.topic_subscription_queue = janus.Queue(maxsize=MAX_REQUEST_QUEUE)  # Topic subscription requests
+            self.peer_connection_queue = janus.Queue(maxsize=MAX_REQUEST_QUEUE)  # Peer connection requests
+            self.file_share_queue = janus.Queue(maxsize=MAX_FILE_QUEUE)  # File sharing requests
+            self.file_download_queue = janus.Queue(maxsize=MAX_FILE_QUEUE)  # File download requests
             logger.debug("Message queues created successfully")
             
             # Enable trio-asyncio mode
@@ -171,18 +233,85 @@ class HeadlessService:
                 await self._run_service()
                     
         except Exception as e:
+            self.failed = True
             logger.error(f"Failed to start headless service: {e}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
+        finally:
+            # Perform teardown on the trio thread that owns the host, whatever
+            # the exit path (stop requested, startup error, or cancellation).
+            # The shield keeps cleanup running if the caller's scope was
+            # cancelled while awaiting readiness.
+            with trio.CancelScope(shield=True):
+                await self._shutdown_async()
+            # Whatever the exit path, the node is no longer serving: make the
+            # API report not-ready instead of leaving stale "ready: true".
+            self.ready = False
+            self.running = False
+            if self.on_stopped:
+                try:
+                    self.on_stopped()
+                except Exception:
+                    logger.exception("Error in on_stopped callback")
     
+    def _warn_if_port_in_use(self):
+        """
+        Warn when the listen port is already taken by another process.
+
+        py-libp2p enables SO_REUSEPORT (for DCUtR hole punching), so a second
+        peer can bind the same port without error. Inbound connections are then
+        delivered to whichever process the kernel picks, which surfaces as
+        "handshake failed when upgrading to secure connection" because a peer
+        with a different PeerID answers. A plain SO_REUSEADDR probe bind still
+        fails while a listener is active, so we can detect the situation and
+        tell the user to pick a different port.
+        """
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("0.0.0.0", self.port))
+        except OSError:
+            logger.warning(
+                f"⚠️  Port {self.port} is already in use by another process. "
+                "libp2p uses SO_REUSEPORT, so this peer will still bind, but "
+                "incoming connections may be handled by the other process and "
+                "fail with 'handshake failed when upgrading to secure connection'. "
+                "Start each local peer with a distinct port, e.g. --port 4001 / --port 4002."
+            )
+        finally:
+            probe.close()
+
+    @staticmethod
+    def _normalize_dial_addr(multiaddr_str: str) -> str:
+        """
+        Rewrite wildcard hosts to loopback so pasted addresses are dialable.
+
+        Peers advertise their listen address as /ip4/0.0.0.0/... in older
+        versions; 0.0.0.0 only makes sense for binding, never for dialing.
+        """
+        normalized = multiaddr_str
+        if "/ip4/0.0.0.0/" in normalized:
+            normalized = normalized.replace("/ip4/0.0.0.0/", "/ip4/127.0.0.1/")
+        if "/ip6/::/" in normalized:
+            normalized = normalized.replace("/ip6/::/", "/ip6/::1/")
+        if normalized != multiaddr_str:
+            logger.warning(
+                f"Dial address contains a wildcard host; using loopback instead: "
+                f"{multiaddr_str} -> {normalized}"
+            )
+        return normalized
+
     async def _run_service(self):
         """Run the main service loop."""
         secret = hashlib.sha256(self.seed.encode()).digest()
         logger.info(f"Using deterministic Ed25519 key derived from seed='{self.seed}'")
         key_pair = create_new_key_pair(seed=secret)
         
-        # Create listen address
+        # Create listen address (bind all interfaces) and a dialable address to advertise
         listen_addr = multiaddr.Multiaddr(f"/ip4/0.0.0.0/tcp/{self.port}")
+        announce_addr = multiaddr.Multiaddr(f"/ip4/{self.announce_host}/tcp/{self.port}")
+
+        self._warn_if_port_in_use()
 
         config = ConnectionConfig(
         min_connections=10,
@@ -210,7 +339,7 @@ class HeadlessService:
         self.dht = KadDHT(self.host, DHTMode.SERVER, enable_random_walk=True)
         logger.info("✅ DHT created with random walk enabled")
         
-        self.full_multiaddr = f"{listen_addr}/p2p/{self.host.get_id()}"
+        self.full_multiaddr = f"{announce_addr}/p2p/{self.host.get_id()}"
         logger.info(f"Host created with PeerID: {self.host.get_id()}")
         logger.info(f"Listening on: {listen_addr}")
         logger.info(f"Full multiaddr: {self.full_multiaddr}")
@@ -287,13 +416,25 @@ class HeadlessService:
                                 nursery.start_soon(self._process_peer_connections)
                                 nursery.start_soon(self._process_file_shares)
                                 nursery.start_soon(self._process_file_downloads)
-                                nursery.start_soon(self._wait_for_stop)
                                 nursery.start_soon(self.monitor_peers)
                                 # nursery.start_soon(maintain_connections, self.host)
 
+                                # Block until a stop is requested from any thread,
+                                # then cancel everything (message handlers can be
+                                # parked on subscription.get() and would otherwise
+                                # keep the nursery — and the host — alive forever).
+                                await self._wait_for_stop()
+                                nursery.cancel_scope.cancel()
+
             except (MultiselectClientError, StreamFailure) as e:
+                # These are not routine connection errors: _setup_connections()
+                # already handles per-peer dial failures. Reaching this outer
+                # scope means a core protocol (pubsub/DHT/identify) failed, so
+                # mark the service as failed and let the supervisor restart it
+                # instead of silently exiting as if the stop was clean.
                 logger.error(f"The protocol negotiation failed: {e}")
-                pass
+                self.failed = True
+                raise
     
     async def _setup_connections(self):
         """Setup connections to specified peers with detailed protocol logging."""
@@ -303,7 +444,7 @@ class HeadlessService:
         for addr_str in self.connect_addrs:
             try:
                 logger.info(f"🔗 Attempting to connect to: {addr_str}")
-                maddr = multiaddr.Multiaddr(addr_str)
+                maddr = multiaddr.Multiaddr(self._normalize_dial_addr(addr_str))
                 info = info_from_p2p_addr(maddr)
                 logger.info(f"🔗 Parsed peer info - ID: {info.peer_id}, Addrs: {info.addrs}")
                 
@@ -449,10 +590,9 @@ class HeadlessService:
         try:
             topic = message.topic or "default"
             
-            # Initialize topic storage if needed
-            if topic not in self.topic_messages:
-                self.topic_messages[topic] = []
-                self.topic_unread_counts[topic] = 0
+            # Our own messages are echoed back by GossipSub. They must not show up
+            # as unread, or every message you send increments your own badge.
+            is_own_message = bool(self.host) and message.sender_id == str(self.host.get_id())
             
             # Check if this is a file sharing message
             is_file_message = message.message.startswith(FILE_MESSAGE_PREFIX)
@@ -469,7 +609,7 @@ class HeadlessService:
                         'sender_id': message.sender_id,
                         'timestamp': message.timestamp,
                         'topic': topic,
-                        'read': False,
+                        'read': is_own_message,
                         'file_cid': file_meta.get('cid', ''),
                         'file_name': file_meta.get('filename', 'unknown'),
                         'file_size': file_meta.get('filesize', 0),
@@ -484,7 +624,7 @@ class HeadlessService:
                         'sender_id': message.sender_id,
                         'timestamp': message.timestamp,
                         'topic': topic,
-                        'read': False
+                        'read': is_own_message
                     }
             else:
                 # Store message with unread flag
@@ -495,11 +635,34 @@ class HeadlessService:
                     'sender_id': message.sender_id,
                     'timestamp': message.timestamp,
                     'topic': topic,
-                    'read': False
+                    'read': is_own_message
                 }
             
-            self.topic_messages[topic].append(message_data)
-            self.topic_unread_counts[topic] += 1
+            # Store the message and enforce a fixed history bound. The lock
+            # keeps API reads (Tornado thread) from iterating while the trio
+            # thread appends/trims, and makes the unread-counter adjustment
+            # atomic with the trim.
+            with self._state_lock:
+                messages = self.topic_messages.get(topic)
+                if messages is None:
+                    messages = []
+                    self.topic_messages[topic] = messages
+                    self.topic_unread_counts[topic] = 0
+                messages.append(message_data)
+                if not is_own_message:
+                    self.topic_unread_counts[topic] += 1
+
+                overflow = len(messages) - MAX_TOPIC_MESSAGES
+                if overflow > 0:
+                    removed = messages[:overflow]
+                    del messages[:overflow]
+                    if not is_own_message:
+                        removed_unread = sum(
+                            1 for m in removed if not m.get("read", False)
+                        )
+                        self.topic_unread_counts[topic] = max(
+                            0, self.topic_unread_counts[topic] - removed_unread
+                        )
             
             # Log in simplified format only if not in UI mode
             if not self.ui_mode:
@@ -508,8 +671,11 @@ class HeadlessService:
                 else:
                     logger.info(f"[{topic}] {message.sender_nick}: {message.message}")
             
-            # Still put message in queue for UI updates
-            await self.message_queue.async_q.put(message_data)
+            # Still put message in the legacy UI queue. The queue is bounded,
+            # so an API-only deployment with no legacy consumer cannot grow it
+            # without limit.
+            self._put_legacy(self.message_queue, message_data)
+            self._fanout(self.message_subscribers, message_data)
             
         except Exception as e:
             logger.error(f"Error handling chat message: {e}")
@@ -521,11 +687,13 @@ class HeadlessService:
         try:
             if self.system_queue:
                 logger.debug(f"System queue available, sending message: {message}")
-                await self.system_queue.async_q.put({
+                payload = {
                     'type': 'system_message',
                     'message': message,
-                    'timestamp': trio.current_time()
-                })
+                    'timestamp': time.time()
+                }
+                self._put_legacy(self.system_queue, payload)
+                self._fanout(self.system_subscribers, payload)
                 logger.debug(f"System message sent successfully: {message}")
             else:
                 logger.warning(f"System queue not available, cannot send message: {message}")
@@ -629,7 +797,7 @@ class HeadlessService:
                         # Parse and connect to the peer
                         try:
                             # Parse the multiaddress
-                            maddr = multiaddr.Multiaddr(multiaddr_str)
+                            maddr = multiaddr.Multiaddr(self._normalize_dial_addr(multiaddr_str))
                             
                             # Try to get peer info from the multiaddress
                             peer_info = info_from_p2p_addr(maddr)
@@ -689,12 +857,14 @@ class HeadlessService:
                             
                             cid_hex = root_cid.hex()
                             
-                            # Track shared file locally
-                            self.shared_files[cid_hex] = {
-                                'filename': filename,
-                                'filesize': filesize,
-                                'filepath': file_path,
-                            }
+                            # Track shared file locally. filepath stays
+                            # server-side; the API only returns filename/size.
+                            with self._state_lock:
+                                self.shared_files[cid_hex] = {
+                                    'filename': filename,
+                                    'filesize': filesize,
+                                    'filepath': file_path,
+                                }
                             
                             logger.info(f"✅ File added to DAG. CID: {cid_hex}")
                             
@@ -715,7 +885,7 @@ class HeadlessService:
                                     # Don't store in topic_messages here - the pubsub echo
                                     # will come back through _handle_chat_message and store it.
                                     # Only notify the UI immediately so it shows the bubble.
-                                    await self.message_queue.async_q.put({
+                                    payload = {
                                         'type': 'file_shared',
                                         'topic': topic,
                                         'file_cid': cid_hex,
@@ -724,7 +894,9 @@ class HeadlessService:
                                         'sender_nick': 'You',
                                         'sender_id': 'self',
                                         'timestamp': time.time(),
-                                    })
+                                    }
+                                    self._put_legacy(self.message_queue, payload)
+                                    self._fanout(self.message_subscribers, payload)
                                 else:
                                     await self._send_system_message(f"Failed to share file to topic")
                             else:
@@ -770,14 +942,22 @@ class HeadlessService:
                                 timeout=60.0
                             )
                             
-                            # Use extracted filename if available, fallback to provided name
-                            save_filename = extracted_filename or filename
+                            # Use extracted filename if available, fallback to provided
+                            # name. Both are attacker-controlled (the filename travels
+                            # inside the pubsub file message), so strip path
+                            # components before joining.
+                            save_filename = os.path.basename(extracted_filename or filename).strip()
+                            if save_filename in ("", ".", ".."):
+                                save_filename = "download"
                             
                             # Ensure download directory exists
                             os.makedirs(self.download_dir, exist_ok=True)
                             
                             # Handle filename conflicts
                             save_path = os.path.join(self.download_dir, save_filename)
+                            download_root = os.path.realpath(self.download_dir)
+                            if os.path.commonpath([download_root, os.path.realpath(save_path)]) != download_root:
+                                raise ValueError("Refusing to write outside the download directory")
                             if os.path.exists(save_path):
                                 name, ext = os.path.splitext(save_filename)
                                 counter = 1
@@ -785,32 +965,38 @@ class HeadlessService:
                                     save_path = os.path.join(self.download_dir, f"{name}_{counter}{ext}")
                                     counter += 1
                             
-                            # Write file
-                            with open(save_path, 'wb') as f:
-                                f.write(file_data)
+                            # Write file off the trio event loop: a large
+                            # download must not stall pubsub/DHT/heartbeats.
+                            await trio.to_thread.run_sync(
+                                _write_bytes, save_path, file_data
+                            )
                             
                             logger.info(f"✅ File downloaded: {save_path} ({len(file_data)} bytes)")
                             
                             # Notify UI
-                            await self.message_queue.async_q.put({
+                            payload = {
                                 'type': 'file_downloaded',
                                 'file_cid': cid_hex,
                                 'file_name': save_filename,
                                 'file_size': len(file_data),
                                 'save_path': save_path,
                                 'timestamp': time.time(),
-                            })
+                            }
+                            self._put_legacy(self.message_queue, payload)
+                            self._fanout(self.message_subscribers, payload)
                             
                         except Exception as e:
                             logger.error(f"Failed to download file: {e}")
                             logger.exception("Full traceback:")
-                            await self.message_queue.async_q.put({
+                            payload = {
                                 'type': 'file_download_failed',
                                 'file_cid': cid_hex,
                                 'file_name': filename,
                                 'error': str(e),
                                 'timestamp': time.time(),
-                            })
+                            }
+                            self._put_legacy(self.message_queue, payload)
+                            self._fanout(self.message_subscribers, payload)
                             
                 except Empty:
                     await trio.sleep(0.1)
@@ -822,39 +1008,50 @@ class HeadlessService:
                 await trio.sleep(0.1)
 
     async def _wait_for_stop(self):
-        """Wait for stop signal."""
-        await self.stop_event.wait()
+        """Poll the thread-safe stop signal without blocking the trio thread."""
+        while not self.stop_event.is_set():
+            await trio.sleep(0.1)
         logger.info("Stop signal received, shutting down...")
         self.running = False
     
-    def send_message(self, message: str):
-        """Send a message through the chat room (thread-safe)."""
+    def send_message(self, message: str) -> bool:
+        """Queue a message for the default chat topic (thread-safe)."""
         if self.outgoing_queue and self.running:
             try:
-                # Put message in outgoing queue (sync call, safe from UI thread)
-                self.outgoing_queue.sync_q.put({
+                # Non-blocking: this is called from the Tornado/UI thread and
+                # must never stall the API event loop if the publisher is behind.
+                self.outgoing_queue.sync_q.put_nowait({
                     'message': message,
                     'timestamp': time.time()
                 })
+                return True
+            except Full:
+                logger.warning("Outgoing message queue is full; dropping message")
             except Exception as e:
                 logger.error(f"Failed to queue message: {e}")
         else:
             logger.warning("Cannot send message: outgoing queue not ready or service not running")
+        return False
     
-    def send_message_to_topic(self, topic: str, message: str):
-        """Send a message to a specific topic (thread-safe)."""
+    def send_message_to_topic(self, topic: str, message: str) -> bool:
+        """Queue a message for a specific topic (thread-safe)."""
         if self.outgoing_queue and self.running:
             try:
-                # Put message with topic in outgoing queue
-                self.outgoing_queue.sync_q.put({
+                self.outgoing_queue.sync_q.put_nowait({
                     'message': message,
                     'topic': topic,
                     'timestamp': time.time()
                 })
+                return True
+            except Full:
+                logger.warning(
+                    f"Outgoing message queue is full; dropping message for {topic}"
+                )
             except Exception as e:
                 logger.error(f"Failed to queue message to topic {topic}: {e}")
         else:
             logger.warning("Cannot send message: outgoing queue not ready or service not running")
+        return False
     
     def get_connection_info(self) -> Dict[str, Any]:
         """Get connection information for UI."""
@@ -870,10 +1067,100 @@ class HeadlessService:
         }
     
     def get_subscribed_topics(self) -> Set[str]:
-        """Get list of all subscribed topics."""
+        """Get user-facing chat subscriptions (protocol topics excluded)."""
         if not self.chat_room:
             return set()
         return self.chat_room.get_subscribed_topics()
+
+    def get_all_pubsub_topics(self) -> Set[str]:
+        """Get every pubsub subscription, including protocol-only topics."""
+        if not self.chat_room:
+            return set()
+        return self.chat_room.get_all_subscriptions()
+
+    def get_shared_files(self) -> List[Dict[str, Any]]:
+        """Snapshot shared-file metadata without exposing local paths."""
+        with self._state_lock:
+            return [
+                {
+                    "cid": cid,
+                    "filename": meta.get("filename"),
+                    "filesize": meta.get("filesize"),
+                }
+                for cid, meta in self.shared_files.items()
+            ]
+
+    def get_shared_file(self, cid: str):
+        """Return one shared-file metadata entry, or None."""
+        with self._state_lock:
+            meta = self.shared_files.get(cid)
+            if not meta:
+                return None
+            return {
+                "cid": cid,
+                "filename": meta.get("filename"),
+                "filesize": meta.get("filesize"),
+            }
+
+    def get_peer_info_cache_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Snapshot the identify cache for API readout."""
+        with self._state_lock:
+            return {
+                peer_id: dict(info)
+                for peer_id, info in self.peer_info_cache.items()
+            }
+
+    def get_peer_info(self, peer_id: str):
+        """Return one cached identify entry, or None."""
+        with self._state_lock:
+            info = self.peer_info_cache.get(peer_id)
+            return dict(info) if info else None
+
+    def delete_peer_info(self, peer_id: str) -> bool:
+        """Invalidate one cached identify entry."""
+        with self._state_lock:
+            return self.peer_info_cache.pop(peer_id, None) is not None
+
+    def get_pubsub_peers(self) -> List[str]:
+        """Snapshot pubsub peers, retrying if the live dict changes mid-copy."""
+        if not self.pubsub:
+            return []
+        for _ in range(3):
+            try:
+                return [str(p) for p in self.pubsub.peers.keys()]
+            except RuntimeError:
+                continue
+        return []
+
+    def get_gossipsub_mesh(self) -> Dict[str, List[str]]:
+        """Snapshot GossipSub mesh, retrying on concurrent modification."""
+        if not self.gossipsub:
+            return {}
+        mesh = getattr(self.gossipsub, "mesh", {})
+        for _ in range(3):
+            try:
+                return {
+                    topic: [str(p) for p in peers]
+                    for topic, peers in mesh.items()
+                }
+            except RuntimeError:
+                continue
+        return {}
+
+    def get_gossipsub_fanout(self) -> Dict[str, List[str]]:
+        """Snapshot GossipSub fanout, retrying on concurrent modification."""
+        if not self.gossipsub:
+            return {}
+        fanout = getattr(self.gossipsub, "fanout", {})
+        for _ in range(3):
+            try:
+                return {
+                    topic: [str(p) for p in peers]
+                    for topic, peers in fanout.items()
+                }
+            except RuntimeError:
+                continue
+        return {}
     
     def subscribe_to_topic(self, topic_name: str) -> bool:
         """
@@ -888,16 +1175,34 @@ class HeadlessService:
         if not self.chat_room or not self.running:
             logger.warning("Cannot subscribe to topic: chat room not ready or service not running")
             return False
+
+        if not isinstance(topic_name, str) or not topic_name:
+            logger.warning("Cannot subscribe to an empty/non-string topic")
+            return False
+        if len(topic_name) > MAX_TOPIC_NAME_LENGTH:
+            logger.warning(
+                f"Cannot subscribe to oversized topic "
+                f"({len(topic_name)} > {MAX_TOPIC_NAME_LENGTH} chars)"
+            )
+            return False
+        if topic_name == PUBSUB_DISCOVERY_TOPIC:
+            logger.warning(f"Cannot subscribe to reserved topic: {topic_name}")
+            return False
+        if len(self.get_subscribed_topics()) >= MAX_TOPICS:
+            logger.warning(f"Cannot subscribe to topic: limit {MAX_TOPICS} reached")
+            return False
         
         try:
             # Put subscription request in queue (sync call, safe from UI thread)
-            self.topic_subscription_queue.sync_q.put({
+            self.topic_subscription_queue.sync_q.put_nowait({
                 'topic': topic_name,
                 'timestamp': time.time()
             })
             logger.info(f"Queued subscription request for topic: {topic_name}")
             return True
-            
+        except Full:
+            logger.warning("Topic subscription queue is full; dropping request")
+            return False
         except Exception as e:
             logger.error(f"Failed to queue topic subscription: {e}")
             return False
@@ -917,11 +1222,15 @@ class HeadlessService:
             return False
         
         try:
+            # 0.0.0.0 is a bind address, not a dial address — rewrite to loopback
+            multiaddr = self._normalize_dial_addr(multiaddr)
             # Put connection request in queue (sync call, safe from UI thread)
-            self.peer_connection_queue.sync_q.put(multiaddr)
+            self.peer_connection_queue.sync_q.put_nowait(multiaddr)
             logger.info(f"Queued peer connection request: {multiaddr}")
             return True
-            
+        except Full:
+            logger.warning("Peer connection queue is full; dropping request")
+            return False
         except Exception as e:
             logger.error(f"Failed to queue peer connection: {e}")
             return False
@@ -942,13 +1251,16 @@ class HeadlessService:
             return False
         
         try:
-            self.file_share_queue.sync_q.put({
+            self.file_share_queue.sync_q.put_nowait({
                 'file_path': file_path,
                 'topic': topic,
                 'timestamp': time.time(),
             })
             logger.info(f"Queued file share request: {file_path} -> {topic}")
             return True
+        except Full:
+            logger.warning("File share queue is full; dropping request")
+            return False
         except Exception as e:
             logger.error(f"Failed to queue file share: {e}")
             return False
@@ -969,17 +1281,72 @@ class HeadlessService:
             return False
         
         try:
-            self.file_download_queue.sync_q.put({
+            self.file_download_queue.sync_q.put_nowait({
                 'file_cid': file_cid,
                 'file_name': file_name,
                 'timestamp': time.time(),
             })
-            logger.info(f"Queued file download request: {file_name} (CID: {file_cid[:16]}...)")
+            logger.info(
+                f"Queued file download request: {file_name} "
+                f"(CID: {str(file_cid)[:16]}...)"
+            )
             return True
+        except Full:
+            logger.warning("File download queue is full; dropping request")
+            return False
         except Exception as e:
             logger.error(f"Failed to queue file download: {e}")
             return False
     
+    def register_subscriber(self, kind: str = "message"):
+        """Register a per-WebSocket-client queue that receives every event."""
+        subscribers = self.message_subscribers if kind == "message" else self.system_subscribers
+        queue = janus.Queue(maxsize=256)
+        with self._subscribers_lock:
+            subscribers.add(queue)
+        return queue
+
+    def unregister_subscriber(self, kind: str, queue) -> None:
+        """Remove and close a previously registered subscriber queue."""
+        subscribers = self.message_subscribers if kind == "message" else self.system_subscribers
+        with self._subscribers_lock:
+            subscribers.discard(queue)
+        try:
+            queue.close()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _put_legacy(queue, payload) -> None:
+        """
+        Best-effort write to a bounded legacy UI queue.
+
+        A legacy queue is optional (API/headless deployments have no consumer),
+        so a full or closed queue must never block the trio thread or raise.
+        """
+        if queue is None:
+            return
+        try:
+            queue.sync_q.put_nowait(payload)
+        except Exception:
+            pass
+
+    def _fanout(self, subscribers, payload) -> None:
+        """Copy an event to every registered subscriber (non-blocking)."""
+        # Snapshot under the lock: WebSocket open/close happens on the Tornado
+        # thread while _fanout runs on the trio thread. Iterating the live set
+        # can raise "Set changed size during iteration" and drop the event.
+        with self._subscribers_lock:
+            snapshot = list(subscribers)
+        for queue in snapshot:
+            try:
+                # sync_q is the thread-safe side: producers run on the trio
+                # thread, consumers on the Tornado/asyncio thread.
+                queue.sync_q.put_nowait(payload)
+            except Exception:
+                # Queue full (slow client) or closed — drop this client's copy.
+                pass
+
     def get_message_queue(self):
         """Get the message queue for UI."""
         return self.message_queue
@@ -996,9 +1363,11 @@ class HeadlessService:
             topic: The topic name
             
         Returns:
-            List of message dictionaries
+            List of message dictionaries (a snapshot, safe to serialize while
+            the trio thread appends to the live history).
         """
-        return self.topic_messages.get(topic, [])
+        with self._state_lock:
+            return list(self.topic_messages.get(topic, []))
     
     def get_all_topics_with_info(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -1012,17 +1381,19 @@ class HeadlessService:
         """
         result = {}
         subscribed_topics = self.get_subscribed_topics()
-        
-        for topic in subscribed_topics:
-            messages = self.topic_messages.get(topic, [])
-            unread_count = self.topic_unread_counts.get(topic, 0)
-            
-            info = {
-                'unread_count': unread_count,
-                'total_count': len(messages),
-                'last_message': messages[-1] if messages else None
-            }
-            result[topic] = info
+
+        with self._state_lock:
+            for topic in subscribed_topics:
+                messages = self.topic_messages.get(topic, [])
+                unread_count = self.topic_unread_counts.get(topic, 0)
+
+                result[topic] = {
+                    'unread_count': unread_count,
+                    'total_count': len(messages),
+                    # Copy so later read-flag updates cannot mutate the object
+                    # while Tornado is JSON-encoding it.
+                    'last_message': dict(messages[-1]) if messages else None,
+                }
         
         return result
     
@@ -1033,11 +1404,12 @@ class HeadlessService:
         Args:
             topic: The topic name
         """
-        if topic in self.topic_messages:
-            for message in self.topic_messages[topic]:
-                message['read'] = True
-            self.topic_unread_counts[topic] = 0
-            logger.debug(f"Marked all messages in topic '{topic}' as read")
+        with self._state_lock:
+            if topic in self.topic_messages:
+                for message in self.topic_messages[topic]:
+                    message['read'] = True
+                self.topic_unread_counts[topic] = 0
+                logger.debug(f"Marked all messages in topic '{topic}' as read")
     
     def get_unread_count(self, topic: str) -> int:
         """
@@ -1049,7 +1421,8 @@ class HeadlessService:
         Returns:
             Number of unread messages
         """
-        return self.topic_unread_counts.get(topic, 0)
+        with self._state_lock:
+            return self.topic_unread_counts.get(topic, 0)
     
     def get_outgoing_queue(self):
         """Get the outgoing queue for UI to send messages."""
@@ -1086,14 +1459,15 @@ class HeadlessService:
                 logger.info(f"  - Protocols: {len(identify_info.protocols)} protocols")
                 
                 # Store the peer info in our cache
-                self.peer_info_cache[str(peer_id)] = {
-                    'public_key': identify_info.public_key,
-                    'protocol_version': identify_info.protocol_version,
-                    'agent_version': identify_info.agent_version,
-                    'listen_addrs': identify_info.listen_addrs,
-                    'protocols': identify_info.protocols,
-                    'timestamp': time.time()
-                }
+                with self._state_lock:
+                    self.peer_info_cache[str(peer_id)] = {
+                        'public_key': identify_info.public_key,
+                        'protocol_version': identify_info.protocol_version,
+                        'agent_version': identify_info.agent_version,
+                        'listen_addrs': identify_info.listen_addrs,
+                        'protocols': identify_info.protocols,
+                        'timestamp': time.time()
+                    }
                 
                 return identify_info
                 
@@ -1109,13 +1483,13 @@ class HeadlessService:
         peer_id_str = str(peer_id)
         
         # Check if we have cached info
-        if peer_id_str in self.peer_info_cache:
-            cached_info = self.peer_info_cache[peer_id_str]
-            # Check if cache is not too old (5 minutes)
-            if time.time() - cached_info['timestamp'] < 300:
-                return cached_info
-            else:
-                logger.debug(f"Cached info for {peer_id_str} is stale, refreshing")
+        with self._state_lock:
+            cached_info = self.peer_info_cache.get(peer_id_str)
+        # Check if cache is not too old (5 minutes)
+        if cached_info and time.time() - cached_info['timestamp'] < 300:
+            return dict(cached_info)
+        elif cached_info:
+            logger.debug(f"Cached info for {peer_id_str} is stale, refreshing")
         
         # Fetch fresh info
         try:
@@ -1123,45 +1497,89 @@ class HeadlessService:
             identify_info = await self.get_peer_info_via_identify(peer_id_obj)
             
             if identify_info:
-                return self.peer_info_cache[peer_id_str]
+                with self._state_lock:
+                    info = self.peer_info_cache.get(peer_id_str)
+                    return dict(info) if info else None
         except Exception as e:
             logger.error(f"❌ Failed to get peer info for {peer_id_str}: {e}")
         
         return None
-    
+
     def get_public_key_for_peer(self, peer_id: str):
         """Get public key for a peer (synchronous access to cache)."""
         peer_id_str = str(peer_id)
-        if peer_id_str in self.peer_info_cache:
-            return self.peer_info_cache[peer_id_str]['public_key']
-        return None
+        with self._state_lock:
+            info = self.peer_info_cache.get(peer_id_str)
+            return info.get('public_key') if info else None
     
-    async def stop(self):
-        """Stop the headless service."""
-        logger.info("Stopping headless service...")
+    def request_stop(self):
+        """Ask the service to stop. Safe to call from any thread.
+
+        This only signals intent. The trio thread that owns the host performs
+        the actual teardown once, in ``start()``'s ``finally`` block. Signal
+        handlers, UI threads, and Tornado handlers should use this method
+        instead of mutating ``stop_event`` directly.
+        """
         self.stop_event.set()
-        
+
+    async def _shutdown_async(self):
+        """Tear down resources owned by the trio loop. Runs at most once."""
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
+        logger.info("Stopping headless service...")
+
         if self.chat_room:
-            await self.chat_room.stop()
-        
+            try:
+                await self.chat_room.stop()
+            except Exception:
+                logger.exception("Error stopping ChatRoom")
+
         # Stop bitswap client
         if self.bitswap_client:
-            await self.bitswap_client.stop()
-        
-        # Close queues
-        if self.message_queue:
-            self.message_queue.close()
-        if self.system_queue:
-            self.system_queue.close()
-        if self.outgoing_queue:
-            self.outgoing_queue.close()
-        if self.topic_subscription_queue:
-            self.topic_subscription_queue.close()
-        if self.peer_connection_queue:
-            self.peer_connection_queue.close()
-        if self.file_share_queue:
-            self.file_share_queue.close()
-        if self.file_download_queue:
-            self.file_download_queue.close()
-        
+            try:
+                await self.bitswap_client.stop()
+            except Exception:
+                logger.exception("Error stopping Bitswap client")
+
+        # Close per-client subscriber queues
+        with self._subscribers_lock:
+            subscriber_queues = list(
+                self.message_subscribers | self.system_subscribers
+            )
+            self.message_subscribers.clear()
+            self.system_subscribers.clear()
+        for queue in subscriber_queues:
+            try:
+                queue.close()
+            except Exception:
+                pass
+
+        # Close the legacy queues. close() is best-effort: a queue may never
+        # have been created (early startup failure) or already be closed.
+        for queue in (
+            self.message_queue,
+            self.system_queue,
+            self.outgoing_queue,
+            self.topic_subscription_queue,
+            self.peer_connection_queue,
+            self.file_share_queue,
+            self.file_download_queue,
+        ):
+            if queue:
+                try:
+                    queue.close()
+                except Exception:
+                    pass
+
         logger.info("Headless service stopped")
+
+    async def stop(self):
+        """Request shutdown.
+
+        Kept async for existing callers running inside the trio loop. The
+        actual teardown is performed once by the owning trio thread in
+        ``start()``; this method never blocks waiting for that teardown, so it
+        is safe to call from a task owned by ``start()``.
+        """
+        self.request_stop()

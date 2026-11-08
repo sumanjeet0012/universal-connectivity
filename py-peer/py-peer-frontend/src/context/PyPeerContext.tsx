@@ -45,6 +45,10 @@ export function usePyPeer(): PeerPeerState {
 const DEFAULT_TOPIC = 'universal-connectivity'
 const POLL_INTERVAL = 5000
 
+function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
+  return a.timestamp === b.timestamp && a.sender_id === b.sender_id && a.message === b.message
+}
+
 export function PyPeerProvider({ children }: { children: React.ReactNode }) {
   const [nodeInfo, setNodeInfo] = useState<NodeInfo | null>(null)
   const [status, setStatus] = useState<ServiceStatus | null>(null)
@@ -54,6 +58,13 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [activeTopic, setActiveTopic] = useState(DEFAULT_TOPIC)
+
+  // The WebSocket handler must see the current topic without reconnecting on
+  // every topic switch.
+  const activeTopicRef = useRef(activeTopic)
+  useEffect(() => {
+    activeTopicRef.current = activeTopic
+  }, [activeTopic])
 
   // ── Initial load ─────────────────────────────────────────────────────────
 
@@ -67,9 +78,9 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
         setNodeInfo(info)
         setStatus(svc)
         setLoading(false)
-      } catch (e: unknown) {
+      } catch {
         if (cancelled) return
-        setError(`Cannot reach py-peer API at localhost:8765. Start with: python main.py --api`)
+        setError('Cannot reach the py-peer API. Make sure the backend is running and reachable.')
         setLoading(false)
       }
     }
@@ -114,8 +125,13 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading) return
 
+    let disposed = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let ws: WebSocket | null = null
+
     function connect() {
-      const ws = api.wsMessages()
+      if (disposed) return
+      ws = api.wsMessages()
       wsRef.current = ws
 
       ws.onmessage = (evt) => {
@@ -124,37 +140,59 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
           const msg = frame.data
           if (!msg?.topic) return
 
+          const isActive = msg.topic === activeTopicRef.current
+
           setMessages((prev) => {
             const existing = prev[msg.topic] ?? []
-            // deduplicate by sender+timestamp+message
-            const dup = existing.some(
-              (m) => m.timestamp === msg.timestamp && m.sender_id === msg.sender_id && m.message === msg.message,
+            // Replace our optimistic copy with the server echo (timestamps differ,
+            // so the plain dedupe below would show the message twice).
+            const pendingIdx = existing.findIndex(
+              (m) => m.pending && m.sender_id === msg.sender_id && m.message === msg.message,
             )
-            if (dup) return prev
-            return { ...prev, [msg.topic]: [...existing, msg] }
+            if (pendingIdx !== -1) {
+              const next = existing.slice()
+              next[pendingIdx] = { ...msg, read: isActive || msg.read }
+              return { ...prev, [msg.topic]: next }
+            }
+            if (existing.some((m) => sameMessage(m, msg))) return prev
+            return { ...prev, [msg.topic]: [...existing, { ...msg, read: isActive || msg.read }] }
           })
 
-          // refresh unread count in topics
+          if (isActive) {
+            // The user is looking at this topic, so keep the server's unread
+            // state in sync instead of showing a badge for messages already read.
+            api.markRead(msg.topic).catch(() => {})
+          }
+
           setTopics((prev) => {
             const t = prev[msg.topic]
             if (!t) return prev
             return {
               ...prev,
-              [msg.topic]: { ...t, unread_count: t.unread_count + 1, total_count: t.total_count + 1, last_message: msg },
+              [msg.topic]: {
+                ...t,
+                unread_count: isActive ? 0 : t.unread_count + 1,
+                total_count: t.total_count + 1,
+                last_message: msg,
+              },
             }
           })
         } catch { /* ignore malformed */ }
       }
 
       ws.onclose = () => {
+        if (disposed) return
         // Reconnect after 3 s
-        setTimeout(connect, 3000)
+        retryTimer = setTimeout(connect, 3000)
       }
     }
 
     connect()
     return () => {
-      wsRef.current?.close()
+      disposed = true
+      if (retryTimer) clearTimeout(retryTimer)
+      ws?.close()
+      wsRef.current = null
     }
   }, [loading])
 
@@ -165,8 +203,13 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading) return
 
+    let disposed = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let ws: WebSocket | null = null
+
     function connect() {
-      const ws = api.wsPeers()
+      if (disposed) return
+      ws = api.wsPeers()
       wsPeersRef.current = ws
 
       ws.onmessage = (evt) => {
@@ -181,20 +224,56 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
         } catch { /* ignore */ }
       }
 
-      ws.onclose = () => setTimeout(connect, 3000)
+      ws.onclose = () => {
+        if (disposed) return
+        retryTimer = setTimeout(connect, 3000)
+      }
     }
 
     connect()
-    return () => { wsPeersRef.current?.close() }
+    return () => {
+      disposed = true
+      if (retryTimer) clearTimeout(retryTimer)
+      ws?.close()
+      wsPeersRef.current = null
+    }
   }, [loading])
 
   // ── Fetch historical messages for active topic ─────────────────────────
 
   useEffect(() => {
     if (!activeTopic || loading) return
-    api.getMessages(activeTopic).then(({ messages: msgs }) => {
-      setMessages((prev) => ({ ...prev, [activeTopic]: msgs }))
-    }).catch(() => { /* topic may not exist yet */ })
+    let cancelled = false
+    const topic = activeTopic
+
+    async function loadHistory() {
+      try {
+        const first = await api.getMessages(topic)
+        let history = first.messages
+
+        // The API pages from the oldest message, so a busy topic would otherwise
+        // show only its first page and silently drop everything newer.
+        if (first.total > history.length) {
+          const offset = Math.max(0, first.total - first.limit)
+          const tail = await api.getMessages(topic, first.limit, offset)
+          history = tail.messages
+        }
+
+        if (cancelled) return
+        setMessages((prev) => {
+          const existing = prev[topic] ?? []
+          const merged = [...history]
+          for (const m of existing) {
+            if (!merged.some((h) => sameMessage(h, m))) merged.push(m)
+          }
+          merged.sort((a, b) => a.timestamp - b.timestamp)
+          return { ...prev, [topic]: merged }
+        })
+      } catch { /* topic may not exist yet */ }
+    }
+
+    loadHistory()
+    return () => { cancelled = true }
   }, [activeTopic, loading])
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -210,6 +289,7 @@ export function PyPeerProvider({ children }: { children: React.ReactNode }) {
       timestamp: Date.now() / 1000,
       topic,
       read: true,
+      pending: true,
     }
     setMessages((prev) => ({ ...prev, [topic]: [...(prev[topic] ?? []), optimistic] }))
   }, [nodeInfo])

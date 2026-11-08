@@ -19,13 +19,16 @@ export default function Chat() {
 
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState('')
   const [showMobilePeers, setShowMobilePeers] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Scroll to bottom on new messages
+  const activeMessages = messages[activeTopic] ?? []
+
+  // Scroll to bottom on new messages in the active topic only
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, activeTopic])
+  }, [activeMessages.length, activeTopic])
 
   // Mark as read when topic becomes active
   useEffect(() => {
@@ -38,11 +41,13 @@ export default function Chat() {
       const text = input.trim()
       if (!text || !activeTopic) return
       setSending(true)
+      setSendError('')
       try {
         await sendMessage(activeTopic, text)
         setInput('')
-      } catch { /* ignore */ }
-      finally {
+      } catch (e: unknown) {
+        setSendError(e instanceof Error ? e.message : 'Could not send message.')
+      } finally {
         setSending(false)
       }
     },
@@ -56,7 +61,6 @@ export default function Chat() {
     }
   }
 
-  const activeMessages = messages[activeTopic] ?? []
   const myPeerId = nodeInfo?.peer_id ?? ''
 
   const topicList = Object.entries(topics)
@@ -156,6 +160,9 @@ export default function Chat() {
         </div>
 
         {/* Input */}
+        {sendError && (
+          <p className="px-4 pt-2 text-xs text-red-500">{sendError}</p>
+        )}
         <form
           onSubmit={handleSend}
           className="border-t border-gray-200 px-4 py-3 flex items-end gap-2"

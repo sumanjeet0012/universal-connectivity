@@ -726,8 +726,7 @@ curl http://localhost:8765/api/v1/files/shared
       {
         "cid": "a1b2c3d4e5f6...",
         "filename": "document.pdf",
-        "filesize": 204800,
-        "filepath": "/home/alice/document.pdf"
+        "filesize": 204800
       }
     ],
     "count": 1
@@ -755,8 +754,7 @@ curl http://localhost:8765/api/v1/files/shared/a1b2c3d4e5f6
   "data": {
     "cid": "a1b2c3d4e5f6...",
     "filename": "document.pdf",
-    "filesize": 204800,
-    "filepath": "/home/alice/document.pdf"
+    "filesize": 204800
   },
   "error": null,
   "timestamp": 1772532115.19
@@ -769,17 +767,19 @@ curl http://localhost:8765/api/v1/files/shared/a1b2c3d4e5f6
 
 Shares a file that already exists on the node's local disk. The file is added to Bitswap and its CID is announced via the subscribed topic.
 
+For security, the API accepts only files inside the peer's download directory (shown by `GET /api/v1/service/config`). Desktop UIs that share arbitrary local files call `HeadlessService.share_file()` directly instead.
+
 **Request:**
 ```bash
 curl -X POST http://localhost:8765/api/v1/files/share \
   -H "Content-Type: application/json" \
-  -d '{"file_path": "/home/alice/photo.jpg", "topic": "universal-connectivity"}'
+  -d '{"file_path": "/home/alice/Downloads/photo.jpg", "topic": "universal-connectivity"}'
 ```
 
 **Body:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `file_path` | string | ✅ | Absolute path to the file on disk |
+| `file_path` | string | ✅ | Path to a file inside the download directory |
 | `topic` | string | ✅ | Topic to announce the file on |
 
 **Response `202`:**
@@ -835,7 +835,7 @@ curl -X POST http://localhost:8765/api/v1/files/download \
 
 ### POST /api/v1/files/upload
 
-Accepts a file uploaded via `multipart/form-data`, saves it to the node's download directory, and shares it to a topic.
+Accepts a file uploaded via `multipart/form-data`, saves it to the node's download directory, and shares it to a topic. Individual uploads are limited to 25 MB.
 
 **Request:**
 ```bash
@@ -847,7 +847,7 @@ curl -X POST http://localhost:8765/api/v1/files/upload \
 **Form fields:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `file` | file | ✅ | The file to upload |
+| `file` | file | ✅ | The file to upload (max 25 MB) |
 | `topic` | string | ✅ | Topic to share the file on |
 
 **Response `202`:**
@@ -858,8 +858,7 @@ curl -X POST http://localhost:8765/api/v1/files/upload \
     "message": "File uploaded and share request queued",
     "filename": "photo.jpg",
     "size": 204800,
-    "topic": "universal-connectivity",
-    "saved_path": "/Users/alice/Downloads/photo.jpg"
+    "topic": "universal-connectivity"
   },
   "error": null,
   "timestamp": 1772532115.19
@@ -1595,10 +1594,10 @@ curl -X PUT http://localhost:8765/api/v1/messages/universal-connectivity/read
 ### Share a file
 
 ```bash
-# Share a local file
+# Share a file already in the download directory
 curl -X POST http://localhost:8765/api/v1/files/share \
   -H "Content-Type: application/json" \
-  -d '{"file_path": "/home/alice/doc.pdf", "topic": "universal-connectivity"}'
+  -d '{"file_path": "/home/alice/Downloads/doc.pdf", "topic": "universal-connectivity"}'
 
 # Or upload directly
 curl -X POST http://localhost:8765/api/v1/files/upload \

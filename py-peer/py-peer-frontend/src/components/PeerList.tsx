@@ -1,4 +1,4 @@
-import { XCircleIcon, WifiIcon } from '@heroicons/react/24/outline'
+import { WifiIcon } from '@heroicons/react/24/outline'
 import Blockies from 'react-18-blockies'
 
 interface PeerListProps {

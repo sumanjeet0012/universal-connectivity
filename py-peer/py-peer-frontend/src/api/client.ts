@@ -49,6 +49,8 @@ export interface ChatMessage {
   file_cid?: string
   file_name?: string
   file_size?: number
+  /** Client-only marker for messages optimistically added before the server echo. */
+  pending?: boolean
 }
 
 export interface PubSubConfig {
@@ -70,33 +72,41 @@ export interface DHTStatus {
 // can be left empty.  In production (Vercel / Netlify) set it to your backend's
 // full origin, e.g.  VITE_API_URL=https://your-backend.example.com
 
-const API_ORIGIN: string = import.meta.env.VITE_API_URL ?? ''
+const API_ORIGIN: string = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '')
 export const BASE = `${API_ORIGIN}/api/v1`
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
-  const json: ApiResponse<T> = await res.json()
-  if (!json.success) throw new Error(json.error?.message ?? 'API error')
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, init)
+
+  // The API normally answers with the JSON envelope, but proxies in front of it
+  // (nginx, Cloudflare) can return HTML error pages or empty bodies. Surface a
+  // readable error instead of a JSON.parse SyntaxError.
+  const text = await res.text()
+  let json: ApiResponse<T> | null = null
+  if (text) {
+    try {
+      json = JSON.parse(text) as ApiResponse<T>
+    } catch {
+      throw new Error(`Unexpected response from the py-peer API (HTTP ${res.status}).`)
+    }
+  }
+
+  if (!res.ok || !json?.success) {
+    throw new Error(json?.error?.message ?? `Request failed (HTTP ${res.status}).`)
+  }
   return json.data
 }
 
-async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+const get = <T,>(path: string) => request<T>(path)
+
+const post = <T,>(path: string, body?: unknown) =>
+  request<T>(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
-  const json: ApiResponse<T> = await res.json()
-  if (!json.success) throw new Error(json.error?.message ?? 'API error')
-  return json.data
-}
 
-async function put<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { method: 'PUT' })
-  const json: ApiResponse<T> = await res.json()
-  if (!json.success) throw new Error(json.error?.message ?? 'API error')
-  return json.data
-}
+const put = <T,>(path: string) => request<T>(path, { method: 'PUT' })
 
 // ─── Node ─────────────────────────────────────────────────────────────────────
 

@@ -6,10 +6,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "textual>=0.47.0",
-    "libp2p @ git+https://github.com/sumanjeet0012/py-libp2p.git@6d94f032e685222ebf0ceb156e97e5f7e76cd777",
+    "libp2p>=0.8.1,<0.9",
     "trio>=0.22.0",
     "base58",
-    "protobuf",
+    "protobuf>=6.32.1,<7",
     "janus>=1.0.0",
     "trio_asyncio",
     "kivy>=2.3.0",
@@ -31,3 +31,6 @@ packages = ["."]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.uv.sources]
+libp2p = { git = "https://github.com/sumanjeet0012/py-libp2p.git", branch = "fix/peerstore-local-identity" }

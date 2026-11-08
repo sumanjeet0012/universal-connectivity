@@ -297,6 +297,7 @@ python main.py --api-routes
 | `--headless` | Run without UI (logs only) | `--headless` |
 | `-c, --connect ADDR` | Connect to specific peer | `-c /ip4/...` |
 | `-p, --port PORT` | Set listening port | `-p 8080` |
+| `--announce-host HOST` | Host advertised in your multiaddr (default `127.0.0.1`) | `--announce-host 192.168.1.50` |
 | `-t, --topic TOPIC` | Set custom default topic | `-t my-topic` |
 | `-s, --seed SEED` | Seed for deterministic peer ID | `-s 12345` |
 | `-v, --verbose` | Enable debug logging | `-v` |
@@ -318,6 +319,19 @@ python main.py --kivy --nick Alice --port 9095
 # Use the multiaddr from Peer 1
 python main.py --kivy --nick Bob --connect /ip4/192.168.1.100/tcp/9095/p2p/QmXXX...
 ```
+
+> **Running several peers on one machine:** every peer defaults to port `4001`, and
+> libp2p enables `SO_REUSEPORT`, so a second peer *can* bind the same port. Inbound
+> connections are then delivered to whichever process the kernel picks, which shows
+> up as `handshake failed when upgrading to secure connection`. Give each peer its
+> own `--port` (`4001`, `4002`, ...) and dial `127.0.0.1` rather than `0.0.0.0`
+> (`0.0.0.0` is a bind address, not a dial target — the peer rewrites it for you).
+>
+> ```bash
+> python main.py --seed 1 --port 4001 --api --api-port 8765
+> python main.py --seed 2 --port 4002 --api --api-port 8766
+> # then connect to /ip4/127.0.0.1/tcp/4002/p2p/<seed-2-peer-id>
+> ```
 
 ## 🖥️ User Interfaces
 

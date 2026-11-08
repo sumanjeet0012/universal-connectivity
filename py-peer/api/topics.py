@@ -7,7 +7,9 @@ GET    /api/v1/topics/{topic}/info - topic details (unread, total, last msg)
 GET    /api/v1/topics/{topic}/peers - peers in GossipSub mesh for topic
 """
 
-from .base import BaseHandler
+from .base import BaseHandler, parse_string_field
+from chatroom import PUBSUB_DISCOVERY_TOPIC
+from headless import MAX_TOPIC_NAME_LENGTH, MAX_TOPICS
 
 
 class TopicListHandler(BaseHandler):
@@ -27,14 +29,31 @@ class TopicListHandler(BaseHandler):
         if not self.require_ready():
             return
         body = self.get_json_body()
-        topic = body.get("topic", "").strip()
-        if not topic:
-            self.send_error_response("'topic' field is required.")
+        try:
+            topic = parse_string_field(
+                body,
+                "topic",
+                required=True,
+                max_length=MAX_TOPIC_NAME_LENGTH,
+            )
+        except ValueError as e:
+            self.send_error_response(str(e))
+            return
+
+        if topic == PUBSUB_DISCOVERY_TOPIC:
+            self.send_error_response(
+                "That topic name is reserved for peer discovery.", status=400
+            )
             return
 
         already = self.service.get_subscribed_topics()
         if topic in already:
             self.send_error_response(f"Already subscribed to topic '{topic}'.", status=409)
+            return
+        if len(already) >= MAX_TOPICS:
+            self.send_error_response(
+                f"Topic limit reached ({MAX_TOPICS}).", status=409
+            )
             return
 
         queued = self.service.subscribe_to_topic(topic)
@@ -66,12 +85,8 @@ class TopicMeshPeersHandler(BaseHandler):
     def get(self, topic):
         if not self.require_ready():
             return
-        try:
-            mesh = getattr(self.service.gossipsub, "mesh", {})
-            peers_in_mesh = [str(p) for p in mesh.get(topic, set())]
-        except Exception as e:
-            self.send_error_response(f"Could not read mesh: {e}", status=500)
-            return
+        mesh = self.service.get_gossipsub_mesh()
+        peers_in_mesh = mesh.get(topic, [])
         self.send_success({
             "topic": topic,
             "mesh_peers": peers_in_mesh,
