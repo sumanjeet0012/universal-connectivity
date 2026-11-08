@@ -346,12 +346,6 @@ def main():
     )
     
     parser.add_argument(
-        "--kivy",
-        action="store_true",
-        help="Use the optional Kivy UI (requires: pip install -e '.[kivy]')"
-    )
-    
-    parser.add_argument(
         "-c", "--connect",
         action="append",
         help="Address to connect to (can be used multiple times)",
@@ -510,51 +504,6 @@ def main():
                 logger.error("Headless service failed; exiting with status 1.")
                 sys.exit(1)
 
-        elif args.kivy:
-            # Configure logging for Kivy mode (no console output)
-            setup_logging(ui_mode=True)
-            
-            # Special handling for Kivy mode
-            logger.info("Starting in Kivy mode...")
-
-            # Kivy is an optional extra. Import it before creating the runtime,
-            # so a missing install exits immediately instead of starting a host,
-            # opening the data directory, and then quitting.
-            try:
-                from kivy_ui import run_kivy_ui
-            except ImportError as e:
-                # UI mode installs a null log handler, so also write to stderr:
-                # a missing optional dependency must never fail silently.
-                message = (
-                    "Kivy UI is not installed (optional extra).\n"
-                    f"Import error: {e}\n"
-                    "Install it with: pip install -e '.[kivy]' "
-                    "(with uv: uv sync --extra kivy)\n"
-                    "The Textual TUI (--ui), simple CLI, and API (--api) work "
-                    "without it."
-                )
-                logger.error(message)
-                print(message, file=sys.stderr)
-                sys.exit(1)
-
-            runtime = build_runtime(args)
-
-            # Start the shared runtime in a background thread
-            logger.info("Starting application runtime in background thread...")
-            runtime.start_in_thread()
-            
-            logger.info("Starting Kivy UI in main thread...")
-            
-            try:
-                # Run Kivy UI - this will block until UI exits
-                run_kivy_ui(runtime.service)  # Kivy reads the shared engine; Phase 6 moves it to services
-            finally:
-                # Tear the peer down instead of letting the daemon thread die
-                # with the process.
-                runtime.request_stop()
-                runtime.join(10.0)
-                runtime.close()
-            
         elif args.ui:
             # Configure logging for UI mode (no console output)
             setup_logging(ui_mode=True)

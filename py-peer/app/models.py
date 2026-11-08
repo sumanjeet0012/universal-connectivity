@@ -1,7 +1,7 @@
 """Typed result models returned by services.
 
 These are plain dataclasses with ``to_dict()``; they do not depend on Tornado,
-Textual, Kivy, or MCP. Adapters decide the wire/UI representation.
+Textual, or MCP. Adapters decide the wire/UI representation.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ class RuntimeConfig:
             nickname=getattr(args, "nick", None) or f"peer-{int(time.time())}",
             port=getattr(args, "port", 0) or 0,
             connect_addrs=list(getattr(args, "connect", None) or []),
-            ui_mode=bool(getattr(args, "ui", False) or getattr(args, "kivy", False)),
+            ui_mode=bool(getattr(args, "ui", False)),
             strict_signing=not bool(getattr(args, "no_strict_signing", False)),
             seed=getattr(args, "seed", None),
             topic=getattr(args, "topic", None),

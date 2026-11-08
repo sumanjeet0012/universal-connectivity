@@ -1,6 +1,6 @@
-# Universal Connectivity py-peer — Architecture Audit (Phases 0–3)
+# Universal Connectivity py-peer — Architecture Audit (Phases 0–5)
 
-**Status:** Phase 0–3 deliverables
+**Status:** Phase 0–5 deliverables
 **Audit date:** 2026-11-08
 **Repository:** `universal-connectivity` (`py-peer` is the subject of this audit)
 **Baseline revision:** `dcfbf07` plus the current uncommitted working tree; Phase 1
@@ -10,6 +10,12 @@ changes are recorded in §15
 > This document records the **current** system, not the target architecture in the
 > implementation brief. Every claim below is marked as **Verified**, **Assumption**,
 > or **Unknown** unless it is directly quoted from source or command output.
+>
+> Sections 1–14 preserve the Phase 0 audit of the pre-migration tree. Where a
+> finding has since been fixed, the section carries a phase update. In
+> particular, **Kivy was removed entirely in Phase 5** (§19); references to a
+> Kivy adapter in the historical sections describe the baseline, not the
+> current tree.
 >
 > The working tree is dirty. Several files (`main.py`, `headless.py`, `api/*`,
 > `pyproject.toml`, the React frontend) already contain uncommitted changes, and
@@ -21,8 +27,8 @@ changes are recorded in §15
 ## 1. Executive summary
 
 The Python peer is a single-process application with a usable
-`HeadlessService`, a Tornado REST/WebSocket API, a Textual TUI, a Kivy UI, a
-simple CLI, and a separate React frontend. It works, but it does not yet meet the
+`HeadlessService`, a Tornado REST/WebSocket API, a Textual TUI, a simple CLI,
+and a separate React frontend. It works, but it does not yet meet the
 implementation brief's architecture goals.
 
 The most important verified findings are:
@@ -51,10 +57,11 @@ The most important verified findings are:
    Phase 4 (§18): identity, history, and the system log live under one resolved
    data root (`--data-dir` / `UC_DATA_DIR` / platform default). `.env` is still
    read from CWD and downloads still go to `~/Downloads` by design.
-6. **Kivy was a mandatory dependency** even though it is only imported by
-   `kivy_ui.py` (deferred import in `main.py`). Resolved by Phase 5 (§19): Kivy
-   is now the optional `kivy` extra. No Android/buildozer/python-for-android
-   files exist, and no py-peer CI workflow exists.
+6. **Kivy was a mandatory dependency** even though it was only imported by
+   `kivy_ui.py` (deferred import in `main.py`). Resolved by Phase 5 (§19): the
+   Kivy UI, `--kivy` flag, optional extra, and dependency chain were removed
+   entirely. No Android/buildozer/python-for-android files exist, and no
+   py-peer CI workflow exists.
 7. **The package build is not distributable as-is:** `uv build` succeeds, but the
    wheel is **36 MB / 129 MB uncompressed** and contains **13,572
    `py-peer-frontend/node_modules` entries**, plus `dist/`, tests, and docs. The
@@ -92,7 +99,7 @@ Entry points are all in `main.py:main()`:
 | Mode | CLI flag | What runs |
 |---|---|---|
 | API | `--api [--api-port N]` | `HeadlessService` in a daemon trio thread + Tornado in the main thread |
-| Kivy UI | `--kivy` | `HeadlessService` in a daemon trio thread + Kivy in the main thread |
+| Kivy UI *(removed in Phase 5)* | `--kivy` *(removed)* | Formerly `HeadlessService` + Kivy; no longer present |
 | Textual TUI | `--ui` | `HeadlessService` in a daemon trio thread + Textual in the main thread |
 | Simple CLI | no mode flag | `trio.run(main_async)` with stdin/stdout chat |
 | Headless | `--headless` | `trio.run(main_async)` → `await service.start()` |
@@ -108,7 +115,7 @@ Entry points are all in `main.py:main()`:
 | `tornado_server.py` | 229 | Tornado application and route table |
 | `api/*.py` | ~1,300 total | REST/WebSocket adapters over `HeadlessService` |
 | `ui.py` | 323 | Textual TUI; reads janus queues, calls service directly |
-| `kivy_ui.py` | 1374 | Kivy/KivyMD UI; reads queues, calls service directly |
+| `kivy_ui.py` *(removed in Phase 5)* | 1374 | Formerly the Kivy/KivyMD UI; deleted, see §19 |
 | `rag_handler.py` | 178 | Optional ChromaDB + Groq `/api/v1/ask` endpoint |
 | `py-peer-frontend/` | — | React + Vite + TypeScript client |
 | `tests/` | 9 files, 82 tests | `unittest` unit/regression tests (committed in `841b20a`; `test_address_config.py` added in Phase 1) |
@@ -518,7 +525,7 @@ from the runtime implementation.
   `self.host = new_host(key_pair=..., connection_config=..., listen_addrs=...,
   announce_addrs=..., addrs_factory=...)`
 
-No other module imports or calls `new_host`. The API, Textual, and Kivy adapters
+No other module imports or calls `new_host`. The API and Textual adapters
 never create a host.
 
 ### 5.2 Protocol inventory
@@ -700,24 +707,22 @@ persistent chat history or offline delivery would be false today.
 
 ## 8. Kivy and dependency audit
 
-### 8.1 Kivy usage
+### 8.1 Kivy usage (removed)
 
-Phase 5 update: Kivy/KivyMD are no longer installed by default; they are the
-optional `kivy` extra (§19). The observations below remain true.
+Phase 5 removed the Kivy UI entirely (§19). The historical observations below
+record what existed before removal:
 
-- Kivy is imported only by `kivy_ui.py` (top-level imports of `kivy.*` and
-  `kivymd.*`). `main.py` imports `kivy_ui` lazily only under `--kivy`, now
-  before starting the runtime, and exits with an install hint if the extra is
-  missing.
+- Kivy was imported only by `kivy_ui.py`; `main.py` imported it lazily under
+  `--kivy`.
 - Core modules (`headless.py`, `chatroom.py`, `app/*`, `api/*`,
-  `tornado_server.py`, `ui.py`, `main.py`) do **not** import Kivy, at module
-  level or otherwise.
-- Kivy UI talks to the same in-process service through direct calls and janus
-  queues, like the Textual UI.
-- No Buildozer, `.spec`, python-for-android, or Android/iOS packaging files are
-  present.
-- The README shows Kivy screenshots but labels the extra as optional and states
-  that no Android build is verified or configured in this repository.
+  `tornado_server.py`, `ui.py`, `main.py`) never imported Kivy.
+- The Kivy UI talked to the same in-process service through direct calls and
+  janus queues, like the Textual UI.
+- No Buildozer, `.spec`, python-for-android, or Android/iOS packaging files were
+  present, and none were added by removal.
+
+Current state: no `kivy_ui.py`, no Kivy screenshot, no `--kivy` flag, and no
+Kivy/KivyMD dependency or optional extra.
 
 ### 8.2 Dependency impact
 
@@ -728,9 +733,9 @@ textual, libp2p (fork via uv.sources), trio, base58, protobuf, janus,
 trio_asyncio, python-dotenv, platformdirs, groq, tornado
 ```
 
-Optional extra `kivy` (`[project.optional-dependencies]`): `kivy`, `kivymd`.
-The default install no longer pulls the Kivy chain (`asynckivy`,
-`materialshapes`, `materialyoucolor`, Pillow).
+There are no optional dependency groups. Phase 5 removed `kivy`, `kivymd`,
+`asynckivy`, `materialshapes`, `materialyoucolor`, Pillow, and the Windows
+Kivy shims from both `pyproject.toml` and `uv.lock`.
 
 Verified installed versions in `.venv`:
 
@@ -742,13 +747,8 @@ trio_asyncio 0.16.0
 janus 2.0.0
 tornado 6.5.10
 protobuf 6.33.6
-kivy 2.3.1
-kivymd 2.0.0
 ```
 
-KivyMD pulled `asynckivy`, `materialshapes`, `materialyoucolor`, and Pillow
-(`uv.lock`). Phase 5 removed that chain from the default install: those
-packages are only present when the `kivy` extra is requested.
 
 ### 8.3 Packaging findings
 
@@ -844,7 +844,7 @@ and publish) and `tests/test_headless_lifecycle.py` (lifecycle coverage added
 before Phase 1). Remaining gaps:
 
 - No test covers the Tornado API handlers end-to-end.
-- No test covers the Textual/Kivy adapters or React UI.
+- No test covers the Textual adapter or React UI.
 - No test covers identity persistence (there is none).
 - No test covers data-directory behaviour (there is none; Phase 4).
   *Phase 3 update: `tests/test_storage.py` covers persistence, dedupe,
@@ -913,7 +913,7 @@ offline delivery: there is still no acknowledgement, mailbox, or sync.
 
 Resolved by the §3.8 remediation:
 
-- TUI/Kivy exits now request stop and join the trio thread (verified). The
+- TUI exits now request stop and join the trio thread (verified). The
   service reports `ready=False, running=False` after `main()` returns.
 - Headless and API modes handle SIGINT/SIGTERM gracefully (verified).
 - Simple CLI exits cleanly after `quit` (verified).
@@ -925,7 +925,7 @@ Resolved by the §3.8 remediation:
 
 Still open:
 
-- Textual/Kivy SIGTERM during an active UI and SIGTERM while the simple CLI is
+- Textual SIGTERM during an active UI and SIGTERM while the simple CLI is
   parked in `input()` are not graceful.
 - No automated test covers repeated instance start/stop or signal delivery.
 - No `ApplicationRuntime` owner yet; Phase 2 should consolidate the remaining
@@ -959,13 +959,14 @@ Still open:
   (`headless.py:113`; `DEFAULT_PORT = 9095` is unused).
 - README says "Message persistence across sessions" is a roadmap item; that is
   consistent with the code.
-- README describes Kivy as mobile-ready, but no Android packaging or CI exists.
+- README previously described Kivy as mobile-ready; Phase 5 removed that claim
+  along with the UI. No Android packaging or CI exists.
 
 ---
 
 ## 12. Recommended migration sequence (file-level)
 
-This follows the brief's phase order. Do not delete Kivy or write Docker first.
+This follows the brief's phase order. Do not write Docker first.
 
 ### Phase 1 — Transport/address correctness (done — see §15)
 
@@ -998,8 +999,7 @@ Likely touch points:
   clearly named package.
 - `headless.py`: split host/runtime ownership from API-facing query methods.
 - `api/*.py`: call services, not `HeadlessService` internals.
-- `ui.py`, `kivy_ui.py`, `main.py`: inject services instead of the concrete glue
-  object.
+- `ui.py`, `main.py`: inject services instead of the concrete glue object.
 - Tests: service-level tests with fake/in-memory dependencies; one operation
   exercised directly and through the HTTP adapter.
 
@@ -1026,24 +1026,23 @@ Delivered:
   runtime wiring. A two-process API run verified a stable peer ID and history
   across a restart.
 
-### Phase 5 — Remove Kivy from core (done — see §19)
+### Phase 5 — Remove Kivy from the runtime (done — see §19)
 
 Delivered:
 
-- `kivy` and `kivymd` moved from `dependencies` to the optional `kivy` extra;
-  `kivy_ui.py` stays as the extra's adapter.
-- `--kivy` now imports the UI before creating the runtime and exits 1 with an
-  install hint (written to stderr as well as the log, because UI mode silences
-  logging) when the extra is missing.
-- Verified that `main`, `headless`, `chatroom`, `ui`, `tornado_server`, `api.*`,
-  and `app.*` import with `kivy`/`kivymd` made unimportable; packaging tests
-  assert Kivy is not a required dependency.
-- README documents the extra, the install commands, and the support policy;
+- Deleted `kivy_ui.py`, the Kivy screenshot, `--kivy`, the optional `kivy`
+  extra, and every Kivy/KivyMD lock entry.
+- `RuntimeConfig.from_namespace` derives `ui_mode` only from `--ui`;
+  `main.py` has no Kivy branch or deferred import.
+- Replaced `tests/test_kivy_optional.py` with `tests/test_kivy_removed.py`,
+  which asserts the module, flag, dependency, extra, asset, and source
+  references are gone and that core modules import with Kivy blocked.
+- README documents only the Textual TUI, simple CLI, API, and headless modes;
   Android remains an explicit, unstarted decision.
 
 ### Phase 6 — UI adapters
 
-- Textual/Kivy use service interfaces.
+- Textual uses service interfaces.
 - React keeps HTTP/WS contracts; add reconnect/error tests where practical.
 - Add headless mode without UI dependencies.
 - Define API authentication/origin policy before remote exposure.
@@ -1108,11 +1107,13 @@ Delivered:
 - [x] Actual package and entry points identified.
 - [x] All UIs and their communication paths listed.
 - [x] All host creation sites identified (one: `headless.py:309`).
-- [x] Startup and shutdown paths documented for API/TUI/Kivy/CLI/headless.
+- [x] Startup and shutdown paths documented for API/TUI/CLI/headless (Kivy was
+      removed in Phase 5).
 - [x] Transport and advertised-address logic traced (TCP-only; manual
       announcement; default loopback).
 - [x] Persistence status documented for each data category.
-- [x] Kivy usage and dependency relationships documented.
+- [x] Kivy usage and dependency relationships documented (the UI was removed in
+      Phase 5).
 - [x] Baseline test results recorded (25 pass, ruff 83 errors, frontend
       lint/build, package build).
 - [x] Unknowns explicitly listed rather than guessed.
@@ -1339,8 +1340,9 @@ dataclasses/dicts and raise `ApplicationError` subclasses.
 - `api.base.as_runtime()` wraps a bare service once and caches it on the
   service (`_uc_runtime`), so every handler and WebSocket in a process shares
   the same runtime, services, and event bus.
-- `main.py` builds exactly one runtime in headless, API, Kivy, and Textual
-  modes; startup failure surfaces as a non-zero exit.
+- `main.py` builds exactly one runtime in headless, API, and Textual modes;
+  startup failure surfaces as a non-zero exit. (The former Kivy mode was removed
+  in Phase 5.)
 
 ### 16.3 Errors at the adapter boundary
 
@@ -1370,7 +1372,9 @@ engines without a bus); `/ws/peers` and `/ws/pubsub/mesh` read through
 | Tornado WebSockets (`/ws/*`) | runtime services + event bus subscriptions |
 | Textual TUI (`ui.py`) | `runtime.messaging.send`, `runtime.peer.connection_info()` |
 | Simple CLI/interactive (`main.py`) | runtime services via `run_simple_interactive` |
-| Kivy (`kivy_ui.py`) | still reads the shared engine directly — Phase 6 exception; it does not create a second host |
+
+The Kivy adapter was removed in Phase 5 (§19), so there is no GUI adapter left
+to migrate.
 
 ### 16.6 Verification
 
@@ -1412,8 +1416,8 @@ POST /api/v1/service/stop     -> graceful shutdown, process exit 0
 
 ### 16.8 Explicit exceptions and follow-ups
 
-- **Kivy** still reads the shared engine directly; migrating it to services is
-  Phase 6. No second host is created.
+- **Kivy** was removed in Phase 5 (§19). No GUI adapter remains; Textual, CLI,
+  and HTTP are the supported interfaces.
 - **StorageService** is a read-only facade over the repository. Phase 3 added
   durable writes, identity/dedupe, and migrations (§17); Phase 4 made the
   default database `<data-dir>/history.db` (§18).
@@ -1580,8 +1584,8 @@ restart and that a duplicate frame is stored once.
   forgotten.
 - [ ] No offline delivery, acknowledgement, sync, message edit/delete, full-text
   search, or age-based retention.
-- Kivy still reads `get_topic_messages()` on the engine (Phase 6), which now
-  delegates to the repository, so it sees the same data without a second store.
+- The former Kivy adapter was removed in Phase 5 (§19); the Textual, CLI, and
+  API adapters read the same repository through services.
 
 ## 18. Phase 4 — Persistence and data directories (implemented)
 
@@ -1706,74 +1710,71 @@ CWD:   only the scratch process logs; no system_messages.txt, history.db, or ide
 - [ ] The identity file is not encrypted at rest; protection is filesystem
   permissions (0600) and the data directory's own permissions.
 
-## 19. Phase 5 — Remove Kivy from the core runtime (implemented)
+## 19. Phase 5 — Remove Kivy from the runtime (implemented)
 
 **Status:** implemented and verified, 2026-11-08.
 **Baseline:** `0364296` (Phase 4).
-**Scope:** Kivy/KivyMD stop being required by default; the optional UI keeps
-working when installed. No change to the service layer or network behaviour.
+**Scope:** retire the Kivy UI and remove every Kivy/KivyMD dependency, CLI
+flag, screenshot, and adapter reference. Core network behaviour and the
+service layer are unchanged.
 
-### 19.1 Packaging
+### 19.1 What was removed
 
-`pyproject.toml` now declares:
+| Removed | Detail |
+|---|---|
+| `kivy_ui.py` | The entire Kivy/KivyMD adapter (1,374 lines). |
+| `assets/images/py-peer-kivy.png` | Kivy screenshot asset. |
+| `--kivy` flag | argparse no longer accepts it; the process exits 2 as for any unknown option. |
+| `[project.optional-dependencies].kivy` | No `kivy` extra remains in `pyproject.toml`. |
+| `tests/test_kivy_optional.py` | Replaced by `tests/test_kivy_removed.py`. |
+| Kivy lock entries | `uv lock` dropped `kivy`, `kivymd`, `asynckivy`, `materialshapes`, `materialyoucolor`, Pillow, `pycairo`, and the Windows shims. |
 
-```toml
-[project.optional-dependencies]
-kivy = ["kivy>=2.3.0", "kivymd>=1.2.0"]
-```
+`pyproject.toml` now has no `kivy` or `kivymd` requirement anywhere. A default
+install (`uv sync` / `pip install -e .`) cannot pull the Kivy dependency chain.
 
-and no longer lists `kivy`/`kivymd` in `[project.dependencies]`. A default
-install (or `uv sync`) therefore drops `kivy`, `kivymd`, `asynckivy`,
-`materialshapes`, `materialyoucolor`, and Pillow from the runtime environment.
-Installing is explicit: `pip install -e '.[kivy]'` or `uv sync --extra kivy`.
-`kivy_ui.py` is unchanged; it is the extra's adapter, not a core module.
+### 19.2 Runtime configuration
 
-### 19.2 `--kivy` behaviour
+`RuntimeConfig.from_namespace` no longer reads a `kivy` attribute; `ui_mode` is
+derived solely from `--ui`. `main.py` has no Kivy branch, import, install hint,
+or teardown path. The supported adapters are the Textual TUI (`--ui`), the
+simple CLI (no mode flag), the API (`--api`), and headless mode.
 
-The Kivy branch imports `kivy_ui` **before** `build_runtime`, so a missing extra
-no longer starts a host, creates a data directory, opens SQLite, and then quits.
-It logs and prints to stderr:
+Attempting `--kivy` fails immediately at argument parsing:
 
 ```text
-Kivy UI is not installed (optional extra).
-Import error: No module named 'kivy'
-Install it with: pip install -e '.[kivy]' (with uv: uv sync --extra kivy)
-The Textual TUI (--ui), simple CLI, and API (--api) work without it.
+error: unrecognized arguments: --kivy
 ```
 
-The stderr copy matters: UI mode installs only a `NullHandler` (by design, to
-keep the terminal clean), so `logger.error` alone would have been invisible.
-The process exits 1 and leaves no data directory behind.
+No peer host is started and no data directory is created.
 
 ### 19.3 Verification
 
 ```
 .venv/bin/python -m unittest discover -s tests
   -> Ran 145 tests ... OK
-     (140 after Phase 4 + 5 new in tests/test_kivy_optional.py)
+     (140 after Phases 3–4 + 5 Kivy-removal tests)
 
-.venv/bin/python -m py_compile main.py kivy_ui.py
-  -> COMPILE_OK
+grep -ri kivy README.md pyproject.toml uv.lock *.py api app
+  -> no matches (historical audit text excepted)
 ```
 
-`tests/test_kivy_optional.py` runs a subprocess with a meta-path finder that
-raises `ImportError` for `kivy`/`kivymd`, then imports `main`, `headless`,
-`chatroom`, `tornado_server`, `ui`, `api.base`, `app.runtime`, and `app.paths`.
-It also asserts no `kivy*` module leaked into `sys.modules`, that `--kivy`
-exits 1 with the install hint without creating `history.db` or `identity/`, and
-that `pyproject.toml` keeps both packages in the optional extra only.
+`tests/test_kivy_removed.py` asserts:
+
+- `kivy_ui.py` and the Kivy screenshot are gone;
+- `pyproject.toml` has no `kivy`/`kivymd` requirement or extra;
+- `--help` has no `--kivy`, and `--kivy` exits 2;
+- `main`, `headless`, `chatroom`, `tornado_server`, `ui`, `api.base`,
+  `app.runtime`, and `app.paths` import with `kivy`/`kivymd` blocked;
+- no application `.py` file references Kivy.
 
 ### 19.4 Acceptance and explicit exceptions
 
-- [x] Core dependencies no longer include Kivy or KivyMD.
-- [x] `main.py`, `headless.py`, `chatroom.py`, `ui.py`, the API, and `app/*`
-  import without Kivy installed.
-- [x] `--kivy` fails fast and tells the operator how to install the extra.
-- [x] README documents the extra and states a support policy.
-- [ ] `kivy_ui.py` still talks to the engine directly; moving it to services is
-  Phase 6.
-- [ ] No automated test renders the Kivy UI; the subprocess test covers imports
-  and dependency policy only.
-- [ ] No Android/Buildozer packaging exists, and removing the dependency does
-  not make the app installable on Android. That stays a separate decision.
-- [ ] The Kivy extra is not exercised in CI (there is no CI workflow yet).
+- [x] No Kivy/KivyMD dependency, optional extra, flag, module, or asset remains.
+- [x] Core modules import and run with `kivy`/`kivymd` made unimportable.
+- [x] README and CLI help describe only Textual TUI, simple CLI, API, and
+  headless modes.
+- [x] `uv.lock` no longer contains the Kivy dependency chain.
+- [ ] No GUI or mobile UI exists. Android/iOS packaging would require a new UI
+  and a separate decision; removing Kivy alone does not produce a mobile build.
+- [ ] There is no CI workflow, so the removal test runs locally only.
+

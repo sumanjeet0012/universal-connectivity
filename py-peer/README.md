@@ -21,16 +21,11 @@ This is the Python implementation of the [Universal Connectivity][UNIV_CONN] app
 
 ## 🚀 Overview
 
-py-peer is a decentralized chat application that enables peer-to-peer communication without requiring central servers. Built on libp2p, it provides secure, direct communication between participants using modern networking protocols. It offers multiple interaction modes: a terminal-based Textual TUI, a simple CLI, a React frontend powered by a Tornado REST + WebSocket API, and an optional Kivy desktop/mobile-style UI.
+py-peer is a decentralized chat application that enables peer-to-peer communication without requiring central servers. Built on libp2p, it provides secure, direct communication between participants using modern networking protocols. It offers multiple interaction modes: a terminal-based Textual TUI, a simple CLI, and a React frontend powered by a Tornado REST + WebSocket API.
 
-Textual and CLI modes run with direct in-process access to the HeadlessService. The React frontend is decoupled and communicates with HeadlessService through Tornado REST and WebSocket endpoints. The Kivy UI is an optional extra (`pip install -e '.[kivy]'`) that shares the same in-process service; the core runtime, TUI, CLI, and API never import or require Kivy.
+Textual and CLI modes run with direct in-process access to the HeadlessService. The React frontend is decoupled and communicates with HeadlessService through Tornado REST and WebSocket endpoints. No graphical toolkit is required: the runtime, TUI, CLI, and API are pure Python.
 
 ## 📸 Screenshots
-
-### Kivy Interface (optional extra)
-![py-peer Kivy UI](assets/images/py-peer-kivy.png)
-
-*The Kivy/KivyMD interface featuring WhatsApp-style navigation, topic-based conversations, and one-tap copy functionality for peer IDs and multiaddresses. Install the `kivy` extra to run it.*
 
 ### Textual TUI Interface
 ![py-peer Textual UI](assets/images/py-peer-textual-ui.png)
@@ -41,7 +36,6 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 
 - **[libp2p](https://libp2p.io/)** - Modular peer-to-peer networking stack
 - **[Trio](https://trio.readthedocs.io/)** - Async/await framework for Python
-- **[KivyMD](https://kivymd.readthedocs.io/)** - Material Design UI framework (optional `kivy` extra)
 - **[Textual](https://textual.textualize.io/)** - Modern Terminal User Interface framework
 - **[Tornado](https://www.tornadoweb.org/)** - REST and WebSocket API server
 - **[React + Vite](https://vitejs.dev/)** - Modern web frontend for py-peer
@@ -51,21 +45,19 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 
 ### Core Features
 - **Peer-to-Peer Chat** - Direct communication without central servers
-- **Multiple UI Modes** - Textual TUI, simple CLI, REST/WebSocket API, or the optional Kivy UI
+- **Multiple UI Modes** - Textual TUI, simple CLI, or the REST/WebSocket API with a React frontend
 - **Real-time Messaging** - Instant message delivery through GossipSub
 - **Peer Discovery** - Automatic discovery of other peers in the network
-- **Cross-Platform** - Works on Linux, macOS, Windows, and mobile platforms
+- **Cross-Platform** - Works on Linux, macOS, and Windows
 - **Secure Communication** - Built-in encryption and peer authentication
 - **REST + WebSocket API** - Full Tornado API for programmatic control and real-time streams
 - **Web Frontend** - React dashboard for chat, topic management, and peer operations
 
 ### Advanced Features (NEW!)
 - **Topic-Based Conversations** - Subscribe to and chat in multiple topics simultaneously
-- **WhatsApp-Style Interface** - Intuitive topic selector with unread message counts
 - **Dynamic Topic Management** - Add new topics on the fly without restarting
 - **Per-Topic Message Storage** - Messages organized by topic with read/unread tracking, stored in a local SQLite database under the data directory
-- **Dynamic Peer Connection** - Connect to peers using their multiaddress through the UI
-- **One-Tap Copy** - Easy sharing of Peer ID and Multiaddr with clickable copy
+- **Dynamic Peer Connection** - Connect to peers using their multiaddress through the API or CLI
 - **Message Filtering** - View messages only for the selected topic
 - **Custom Topics** - Use custom topic names via command line or UI
 - **Persistent Connections** - Automatic peer connection maintenance
@@ -73,14 +65,6 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 - **RAG Assistant** - Ask py-libp2p questions through `/api/v1/ask` powered by vector search + LLM
 
 ### UI-Specific Features
-
-#### Kivy UI Features
-- Topic list with unread counts
-- Per-topic conversation views
-- Tap-to-copy for Peer ID and Multiaddr
-- Dynamic peer connection dialog
-- Connection info display
-- Material Design aesthetic
 
 #### Textual TUI Features
 - Live peer count display
@@ -106,14 +90,13 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 - One `ApplicationRuntime` (`app/`) owns the single libp2p host and service instances per process
 - Textual TUI and CLI call runtime services in-process; no HTTP hop
 - React frontend reaches the same services through Tornado REST (`/api/v1/*`) and WebSockets (`/ws/*`)
-- Kivy still reads the shared engine until its adapter migration in Phase 6
 - A future MCP adapter can expose the same services without duplicating networking code
 
 ```
 ┌────────────────────────────────────┐      ┌──────────────────────────────┐
 │ Local UI Path (Choose One)         │      │ Web Client Path              │
 ├────────────────────────────────────┤      ├──────────────────────────────┤
-│ Kivy UI / Textual TUI / CLI        │      │ React Frontend (Vite + TS)   │
+│ Textual TUI / CLI                  │      │ React Frontend (Vite + TS)   │
 │                                    │      │ • /api/v1 calls              │
 │ • In-process access                │      │ • /ws streams                │
 │ • No HTTP hop required             │      │ • RAG assistant UI           │
@@ -157,7 +140,6 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 ### Components
 
 - **main.py** - Application entry point and argument parsing
-- **kivy_ui.py** - Kivy interface, shipped as the optional `kivy` extra
 - **ui.py** - Textual-based terminal user interface
 - **headless.py** - Background engine managing libp2p operations (the runtime's transport layer)
 - **app/** - Framework-independent `ApplicationRuntime` and services (peer, connection, messaging, discovery, identity, files, storage)
@@ -188,7 +170,6 @@ User Input → UI Thread → Queue → Async Thread (Trio)
 - **Python 3.12+**
 - **uv** (recommended) or pip package manager
 - Network connectivity for peer-to-peer communication
-- For the optional Kivy UI: the `kivy` extra plus system SDL dependencies (see Installation)
 - For React frontend: **Node.js 18+** and npm
 - For RAG endpoint (`/api/v1/ask`): Groq API key + vector store build dependencies
 
@@ -240,48 +221,6 @@ source .venv/bin/activate  # Linux/macOS
 pip install -e .
 ```
 
-### Optional Kivy UI
-
-Kivy is **not** installed by default and is not needed by the core runtime, the
-Textual TUI, the simple CLI, or the API server. Install it only if you want the
-`--kivy` interface:
-
-```bash
-# uv (installs the optional extra)
-uv sync --extra kivy
-
-# pip / editable install
-pip install -e '.[kivy]'
-```
-
-Without the extra, `python main.py --kivy` exits immediately with an install
-hint; nothing else changes.
-
-Kivy may also need system dependencies:
-
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt-get install -y \
-    python3-dev \
-    build-essential \
-    git \
-    ffmpeg \
-    libsdl2-dev \
-    libsdl2-image-dev \
-    libsdl2-mixer-dev \
-    libsdl2-ttf-dev \
-    libportmidi-dev \
-    libswscale-dev \
-    libavformat-dev \
-    libavcodec-dev \
-    zlib1g-dev
-```
-
-**macOS:**
-```bash
-brew install sdl2 sdl2_image sdl2_ttf sdl2_mixer
-```
-
 ## 🎯 Usage
 
 ### Quick Start
@@ -289,9 +228,6 @@ brew install sdl2 sdl2_image sdl2_ttf sdl2_mixer
 ```bash
 # Textual TUI (Terminal interface)
 python main.py --ui --nick Bob
-
-# Kivy UI (optional extra; install it first, see above)
-python main.py --kivy --nick Alice
 
 # Simple CLI mode
 python main.py --nick Charlie
@@ -311,7 +247,6 @@ python main.py --api-routes
 | Option | Description | Example |
 |--------|-------------|---------|
 | `--nick NAME` | Set your nickname (required) | `--nick Alice` |
-| `--kivy` | Use the optional Kivy UI (requires the `kivy` extra) | `--kivy` |
 | `--ui` | Use Textual TUI interface | `--ui` |
 | `--headless` | Run without UI (logs only) | `--headless` |
 | `-c, --connect ADDR` | Connect to specific peer | `-c /ip4/...` |
@@ -333,14 +268,14 @@ python main.py --api-routes
 
 **Peer 1:**
 ```bash
-python main.py --kivy --nick Alice --port 9095
-# Get your multiaddr from the info dialog (tap ℹ️ icon)
+python main.py --ui --nick Alice --port 9095
+# Copy your advertised multiaddr from the startup log
 ```
 
 **Peer 2:**
 ```bash
 # Use the multiaddr from Peer 1
-python main.py --kivy --nick Bob --connect /ip4/192.168.1.100/tcp/9095/p2p/QmXXX...
+python main.py --ui --nick Bob --connect /ip4/192.168.1.100/tcp/9095/p2p/QmXXX...
 ```
 
 > **Running several peers on one machine:** every peer defaults to port `4001`, and
@@ -394,40 +329,11 @@ Notes:
 
 ## 🖥️ User Interfaces
 
-Textual and CLI run against the local in-process HeadlessService. React frontend clients connect over HTTP/WebSocket through the Tornado API layer. The Kivy UI runs the same in-process service but is installed separately.
+Textual and CLI run against the local in-process HeadlessService. React frontend clients connect over HTTP/WebSocket through the Tornado API layer.
 
-**Support policy:** the Textual TUI, simple CLI, headless mode, and Tornado API are supported core interfaces. The Kivy UI is an optional extra, is not installed by default, and is not covered by the automated UI tests. Android/iOS packaging is a separate, unstarted effort — the Kivy extra alone does not produce a mobile build.
+**Support policy:** the Textual TUI, simple CLI, headless mode, and Tornado API are the supported interfaces. There is no graphical UI toolkit dependency.
 
-### 1. Kivy UI (optional extra)
-
-**Features:**
-- WhatsApp-style topic selector
-- Per-topic conversations
-- Unread message counts
-- Tap-to-copy for sharing
-- Dynamic peer connection
-- Material Design
-
-**Navigation:**
-```
-Topics Screen (Main)
-  ├─ Tap topic → Open conversation
-  ├─ + button → Subscribe to new topic
-  ├─ 🔗 button → Connect to peer
-  └─ ℹ️ button → View connection info
-
-Chat Screen
-  ├─ Back → Return to topics
-  ├─ ℹ️ button → Show status
-  └─ Type & send messages
-```
-
-**Copying Peer Info:**
-1. Tap ℹ️ (info) icon
-2. Tap on Peer ID or Multiaddr card
-3. Value copied to clipboard automatically
-
-### 2. Textual TUI
+### 1. Textual TUI
 
 **Features:**
 - Terminal-based interface
@@ -444,7 +350,7 @@ Chat Screen
 **Note:** Copy the multiaddr from the system log at
 `<data-dir>/logs/system_messages.txt` for sharing.
 
-### 3. Simple CLI Mode
+### 2. Simple CLI Mode
 
 **Features:**
 - Minimal interface
@@ -455,7 +361,7 @@ Chat Screen
 **Usage:**
 Just type messages and press Enter. Use `/quit` to exit.
 
-### 4. React Web Frontend
+### 3. React Web Frontend
 
 The React frontend is located in `py-peer/py-peer-frontend` and uses the Tornado API.
 
@@ -483,24 +389,19 @@ Open `http://localhost:3000`.
 
 **Via Command Line:**
 ```bash
-python main.py --kivy --nick Alice --topic my-custom-topic
+python main.py --ui --nick Alice --topic my-custom-topic
 ```
 
-**Via UI (Kivy):**
-1. Tap + button in Topics screen
-2. Enter topic name
-3. Tap SUBSCRIBE
+**At runtime:** subscribe through the API with `POST /api/v1/topics` and
+`{"topic": "my-custom-topic"}`.
 
-### Dynamic Peer Connection (Kivy UI)
+### Dynamic Peer Connection
 
-1. Get peer's multiaddr:
-   - Tap ℹ️ icon in Topics screen
-   - Tap on Multiaddr card to copy
-   
-2. Connect to peer:
-   - Tap 🔗 icon in Topics screen
-   - Paste multiaddr
-   - Tap CONNECT
+1. Get the other peer's multiaddr from the startup log or
+   `GET /api/v1/node/multiaddr`.
+2. Connect in either of these ways:
+   - Start with `--connect <multiaddr>` / `-c <multiaddr>`.
+   - API: `POST /api/v1/peers/connect` with `{"multiaddr": "..."}`.
 
 ### Message Storage
 
@@ -608,7 +509,6 @@ the peer never starts half-configured.
 ```
 py-peer/
 ├── main.py              # Entry point & argument parsing
-├── kivy_ui.py          # Kivy mobile UI (NEW!)
 ├── ui.py               # Textual TUI implementation
 ├── headless.py         # Background service & state management
 ├── chatroom.py         # Chat room logic & topic handling
@@ -623,12 +523,6 @@ py-peer/
 ```
 
 ### Key Classes
-
-**kivy_ui.py:**
-- `ChatScreen` - Per-topic conversation view
-- `TopicsScreen` - Main topic selector (WhatsApp-style)
-- `PeersScreen` - Connected peers list
-- `ChatApp` - Main Kivy application
 
 **headless.py:**
 - `HeadlessService` - Background libp2p service
@@ -655,13 +549,13 @@ py-peer/
 
 ```bash
 # Development mode with debug logging
-python main.py --kivy --nick TestUser --verbose
+python main.py --ui --nick TestUser --verbose
 
 # Test with multiple topics
-python main.py --kivy --nick Alice --topic dev-chat
+python main.py --ui --nick Alice --topic dev-chat
 
 # Run with specific port
-python main.py --kivy --nick Bob --port 8080
+python main.py --ui --nick Bob --port 8080
 
 # Run REST + WebSocket API
 python main.py --api --nick ApiNode --api-port 8765
@@ -678,7 +572,6 @@ The project follows Python best practices:
 - Modular architecture
 - Thread-safe queue-based communication
 - Comprehensive logging
-- Material Design UI principles (Kivy)
 
 ## 🐛 Troubleshooting
 
@@ -687,51 +580,31 @@ The project follows Python best practices:
 **1. Port Already in Use**
 ```bash
 # Solution: Specify a different port
-python main.py --kivy --nick YourName --port 8081
+python main.py --ui --nick YourName --port 8081
 ```
 
 **2. No Peers Found**
 - Ensure other peers are running on the same network
 - Check firewall settings
-- Use `--connect` or UI connect button to manually connect
+- Use `--connect` (or `POST /api/v1/peers/connect`) to connect manually
 - Verify multiaddr format is correct
 
-**3. Kivy UI Not Starting**
-
-Kivy is an optional extra, so a fresh install does not include it:
-```bash
-# Install the extra (with uv: uv sync --extra kivy)
-pip install -e '.[kivy]'
-
-# Linux system dependencies if Kivy itself fails to build
-sudo apt-get install libsdl2-dev
-
-# Reinstall the extra
-pip install --force-reinstall -e '.[kivy]'
-```
-The error message from `python main.py --kivy` prints the exact command.
-
-**4. Messages Not Appearing**
+**3. Messages Not Appearing**
 - Check if you're subscribed to the correct topic
-- Verify peer connection in info dialog
+- Verify the peer connection in `/status` or the API
 - Look for errors in `<data-dir>/logs/system_messages.txt`
 
-**5. Clipboard Copy Not Working (Kivy)**
-- Ensure clipboard permissions (mobile)
-- Try restarting the app
-- Check system logs for errors
-
-**6. Tornado API Not Reachable**
+**4. Tornado API Not Reachable**
 - Ensure backend was started with `--api`
 - Check API port (default `8765`)
 - Run `python main.py --api-routes` to verify route setup
 
-**7. React Frontend Shows "Cannot reach py-peer API"**
+**5. React Frontend Shows "Cannot reach py-peer API"**
 - Confirm backend is running: `python main.py --api --nick YourName`
 - For local dev, keep `VITE_API_URL` empty or set to `http://localhost:8765`
 - Restart Vite after `.env.local` changes
 
-**8. RAG Assistant Unavailable (`/api/v1/ask` returns 503)**
+**6. RAG Assistant Unavailable (`/api/v1/ask` returns 503)**
 - Build vector store via `llm/codes/build_vectorstore.py`
 - Install RAG dependencies (Chroma/LangChain/SentenceTransformers)
 - Set `GROQ_API_KEY` environment variable
@@ -740,7 +613,7 @@ The error message from `python main.py --kivy` prints the exact command.
 
 Enable verbose logging to diagnose issues:
 ```bash
-python main.py --kivy --nick DebugUser --verbose
+python main.py --ui --nick DebugUser --verbose
 ```
 
 Check logs:
@@ -753,12 +626,12 @@ tail -f "${UC_DATA_DIR:-$HOME/Library/Application Support/py-peer}/logs/system_m
 Test peer connectivity:
 ```bash
 # Terminal 1
-python main.py --kivy --nick Peer1 --port 8080
+python main.py --ui --nick Peer1 --port 8080
 
-# Get multiaddr from Peer1's info dialog
+# Copy the advertised multiaddr from the startup log
 
 # Terminal 2 (connect to Peer1)
-python main.py --kivy --nick Peer2 --connect /ip4/127.0.0.1/tcp/8080/p2p/PEER_ID
+python main.py --ui --nick Peer2 --connect /ip4/127.0.0.1/tcp/8080/p2p/PEER_ID
 ```
 
 ### Topic Issues
@@ -769,8 +642,8 @@ python main.py --kivy --nick Peer2 --connect /ip4/127.0.0.1/tcp/8080/p2p/PEER_ID
 - Check spelling in both peers
 
 **Unread counts not updating:**
-- Open the chat screen for that topic
-- Messages are marked read when you view the topic
+- Mark the topic read with `PUT /api/v1/messages/{topic}/read`
+- Opening a topic in the Textual TUI marks it read
 
 ## 📚 Advanced Usage
 
@@ -779,19 +652,19 @@ python main.py --kivy --nick Peer2 --connect /ip4/127.0.0.1/tcp/8080/p2p/PEER_ID
 Subscribe to multiple topics and switch between conversations:
 ```bash
 # Start with default topic
-python main.py --kivy --nick Alice
+python main.py --ui --nick Alice
 
-# In UI:
-# 1. Tap + to add "project-updates"
-# 2. Tap + to add "random-chat"
-# 3. Switch between topics by tapping on them
+# At runtime, subscribe through the API:
+# curl -X POST http://localhost:8765/api/v1/topics -H 'Content-Type: application/json' \
+#   -d '{"topic": "project-updates"}'
+# Topic history and unread counts are available per topic under /api/v1/messages.
 ```
 
 ### Custom Topic Names
 
 ```bash
 # Use your own topic namespace
-python main.py --kivy --nick Alice --topic my-company-chat
+python main.py --ui --nick Alice --topic my-company-chat
 ```
 
 ### API + Frontend Pairing
@@ -819,8 +692,8 @@ curl http://localhost:8765/api/v1/topics
 Create private peer groups by using unique topic names:
 ```bash
 # All peers use the same custom topic
-python main.py --kivy --nick Alice --topic secret-group-2024
-python main.py --kivy --nick Bob --topic secret-group-2024
+python main.py --ui --nick Alice --topic secret-group-2024
+python main.py --ui --nick Bob --topic secret-group-2024
 ```
 
 ## 🤝 Contributing
@@ -830,7 +703,7 @@ We welcome contributions! Here's how:
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
-4. Test thoroughly (all three UI modes)
+4. Test thoroughly (TUI, CLI, and API modes)
 5. Commit your changes (`git commit -m 'Add amazing feature'`)
 6. Push to the branch (`git push origin feature/amazing-feature`)
 7. Open a Pull Request
@@ -847,7 +720,6 @@ We welcome contributions! Here's how:
 
 - [libp2p](https://libp2p.io/) - Peer-to-peer networking framework
 - [Trio](https://trio.readthedocs.io/) - Async framework
-- [Kivy](https://kivy.org/) & [KivyMD](https://kivymd.readthedocs.io/) - Optional UI extra
 - [Textual](https://textual.textualize.io/) - Terminal UI framework
 - Universal Connectivity project contributors
 
@@ -871,7 +743,7 @@ For support and questions:
 - [x] File sharing support (REST endpoints: share/download/upload)
 - [ ] Voice/video chat
 - [ ] End-to-end encryption
-- [ ] Mobile app packaging (Android/iOS)
+- [ ] Mobile app packaging (Android/iOS) — requires a new UI, not just packaging
 - [ ] Bootstrap node configuration persistence
 - [ ] Message search functionality
 - [ ] Notification system

@@ -4,8 +4,8 @@ Framework-independent application operations (peers, connections, messaging,
 discovery, identity, files, storage) plus a single runtime that owns the one
 libp2p host per process.
 
-Adapters (Tornado HTTP/WebSocket, Textual, Kivy, CLI, future MCP) import from
-this package and translate results into their own protocol/UI representation.
+Adapters (Tornado HTTP/WebSocket, Textual, CLI, future MCP) import from this
+package and translate results into their own protocol/UI representation.
 Nothing here imports an adapter framework.
 """
 

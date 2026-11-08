@@ -18,14 +18,6 @@ dependencies = [
     "tornado>=6.5.5"
 ]
 
-[project.optional-dependencies]
-# Optional Kivy/KivyMD desktop UI (main.py --kivy). Not required by the core
-# runtime, the Textual TUI, the simple CLI, or the API server.
-kivy = [
-    "kivy>=2.3.0",
-    "kivymd>=1.2.0",
-]
-
 [project.scripts]
 py-peer = "main:main"
 
