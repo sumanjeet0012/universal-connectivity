@@ -1,9 +1,10 @@
-# Universal Connectivity py-peer — Architecture Audit (Phase 0)
+# Universal Connectivity py-peer — Architecture Audit (Phases 0–1)
 
-**Status:** Phase 0 deliverable  
-**Audit date:** 2026-11-08  
-**Repository:** `universal-connectivity` (`py-peer` is the subject of this audit)  
-**Baseline revision:** `dcfbf07` plus the current uncommitted working tree  
+**Status:** Phase 0 and Phase 1 deliverables
+**Audit date:** 2026-11-08
+**Repository:** `universal-connectivity` (`py-peer` is the subject of this audit)
+**Baseline revision:** `dcfbf07` plus the current uncommitted working tree; Phase 1
+changes are recorded in §15
 **Auditor method:** source inspection, dependency inspection, package build, test/lint/build execution
 
 > This document records the **current** system, not the target architecture in the
@@ -33,11 +34,15 @@ The most important verified findings are:
 2. **Only TCP/IPv4 is configured.** `new_host()` is called without QUIC,
    WebSocket, WebRTC, WebTransport, mDNS, UPnP, AutoTLS, or relay options. The
    installed libp2p 0.8.1 supports some of these behind flags, but this app does
-   not enable them.
+   not enable them. *(Phase 1 update: still true. §15 records why each transport
+   remains disabled and what is missing to enable it.)*
 3. **The advertised address is built by hand and defaults to loopback**
    (`/ip4/127.0.0.1/tcp/<port>/p2p/<peer-id>`). It is not derived from the
    listener or from identify-observed addresses. Remote peers cannot dial the
-   default announcement.
+   default announcement. *(Phase 1 update: **fixed**. Advertised addresses now
+   come from `host.get_addrs()` with an `AddrsFactory` that rewrites wildcard
+   listeners; see §15. The default is still loopback for backward compatibility,
+   and the peer now logs a loud warning when it advertises loopback.)*
 4. **No durable application storage exists.** Messages, unread counts, peer
    identify metadata, shared-file metadata, and Bitswap blocks are in memory.
    Identity is re-derived from a seed on every launch, and the default seed
@@ -106,7 +111,7 @@ Entry points are all in `main.py:main()`:
 | `kivy_ui.py` | 1374 | Kivy/KivyMD UI; reads queues, calls service directly |
 | `rag_handler.py` | 178 | Optional ChromaDB + Groq `/api/v1/ask` endpoint |
 | `py-peer-frontend/` | — | React + Vite + TypeScript client |
-| `tests/` | 6 files, 25 tests | `unittest` unit/regression tests (untracked) |
+| `tests/` | 7 files, 54 tests | `unittest` unit/regression tests (committed in `841b20a`; `test_address_config.py` added in Phase 1) |
 
 ### 2.3 Current architecture (verified)
 
@@ -509,7 +514,9 @@ from the runtime implementation.
 
 **Verified:** exactly one host construction call exists in application code:
 
-- `headless.py:309` — `self.host = new_host(key_pair=key_pair, connection_config=config)`
+- `headless.py:_run_service` (~line 555 after Phase 1) —
+  `self.host = new_host(key_pair=..., connection_config=..., listen_addrs=...,
+  announce_addrs=..., addrs_factory=...)`
 
 No other module imports or calls `new_host`. The API, Textual, and Kivy adapters
 never create a host.
@@ -518,11 +525,11 @@ never create a host.
 
 | Protocol / feature | Present? | Configured? | Notes |
 |---|---|---|---|
-| TCP transport | Yes | Implicit default | `new_host()` default is TCP-only; listener `/ip4/0.0.0.0/tcp/<port>` |
-| QUIC | Available in libp2p | No | `enable_quic` not passed |
-| WebSocket transport | Available in libp2p | No | `enable_websocket` not passed |
-| WebRTC / WebTransport | Available in libp2p | No | flags not passed |
-| IPv6 listener | No | No | only `/ip4/...` listen address |
+| TCP transport | Yes | Yes, default | `new_host(listen_addrs=...)` auto-detects TCP; default listener `/ip4/0.0.0.0/tcp/<port>`; `--listen-addr` overrides |
+| QUIC | Available and experimentally verified (§15.4) | No — QUIC listen addresses rejected | Deliberate Phase 1 scope decision; enabling changes the transport mix |
+| WebSocket transport | Available in libp2p, `websockets` missing | No | Listen addresses rejected; dependency not declared |
+| WebRTC / WebTransport | Available in libp2p, `aiortc` missing | No | Listen addresses rejected; flags not passed |
+| IPv6 listener | Yes via `--listen-addr` | Yes, when requested | `::1` verified at runtime (§15.4) |
 | Identify | Yes | Yes | handler registered; outbound request helper exists |
 | KadDHT | Yes | Yes | `DHTMode.SERVER`, random walk enabled |
 | DHT application records | No | No | no `dht.put_value`/provider calls found |
@@ -535,58 +542,94 @@ never create a host.
 | Ping | No | No | no handler or keepalive wiring found |
 | Custom application protocol | No | No | chat uses GossipSub |
 
-### 5.3 Transport matrix (preliminary Phase 1 input)
+### 5.3 Transport matrix (final — verified in Phase 1)
 
-| Transport | Implemented in installed libp2p | Registered by this app | Listener starts | Inbound verified | Outbound verified | Advertised correctly |
+Evidence and test commands are in §15. "Available" means the module ships in the
+installed py-libp2p fork; "enabled" means this app passes the flag.
+
+| Transport | Available in installed libp2p | Enabled by this app | Listener starts | Inbound verified | Outbound verified | Advertised correctly |
 |---|---|---|---|---|---|---|
-| TCP/IPv4 | Yes | Yes (implicit default) | Yes, in code | **Not tested** | **Not tested in Phase 0** | **No by default** (loopback announcement) |
-| QUIC | Yes | No | No | N/A | N/A | N/A |
-| WebSocket | Yes | No | No | N/A | N/A | N/A |
-| WebRTC | Yes | No | No | N/A | N/A | N/A |
-| WebTransport | Yes | No | No | N/A | N/A | N/A |
-| IPv6/TCP | Yes (library) | No | No | N/A | N/A | N/A |
+| TCP/IPv4 (wildcard) | Yes | Yes (default) | Yes | Yes (two-peer test) | Yes (two-peer test) | Yes — rewritten to `announce_host` / `announce_addrs` |
+| TCP/IPv4 (concrete bind) | Yes | Yes via `--listen-addr` | Yes | Yes (loopback test) | Yes (two-peer test) | Yes — advertised as bound |
+| TCP/IPv6 loopback | Yes | Yes via `--listen-addr /ip6/::1/tcp/...` | Yes, verified | Not tested | Not tested | Yes — `/ip6/::1/tcp/<p>/p2p/<id>` |
+| TCP/IPv6 wildcard | Yes | Possible via `--listen-addr /ip6/::/tcp/...` | Not tested | Not tested | Not tested | Factory supports it (unit-tested); runtime not exercised |
+| QUIC | Yes (`aioquic 1.7.0` installed); experimentally bound, dialled, and published in this environment | **No** — QUIC listen addresses are rejected at startup | No | N/A | N/A | N/A |
+| WebSocket | Module present, **`websockets` package missing** | No | No | N/A | N/A | N/A |
+| WebRTC | Module present, **`aiortc` package missing** | No | No | N/A | N/A | N/A |
+| WebTransport | Depends on the TLS/QUIC stack | No (`enable_webtransport` not passed) | No | N/A | N/A | N/A |
 
-"Not tested" means no automated or recorded manual test exists in this audit.
-This matrix is **preliminary**; Phase 1 must verify listener startup, inbound,
-and outbound behaviour directly.
+**Verified library behaviour that matters (see §15.4):**
+
+- `new_host()` without `listen_addrs` yields a TCP transport; listeners are only
+  started by `host.run(listen_addrs=...)`.
+- `host.get_addrs()` returns the bound listener address verbatim, including
+  `/ip4/0.0.0.0/...`; it does **not** normalize wildcards. Before Phase 1 the app
+  therefore advertised `0.0.0.0` only because it hand-built a different string.
+- `host.run()` does **not** raise when a listener fails to bind (for example a
+  non-local `--listen-addr`). It silently starts zero listeners. Phase 1 added
+  `_verify_listeners()`, which turns that into a startup failure.
+- `get_addrs()` appends `/p2p/<peer-id>` and applies `announce_addrs` /
+  `addrs_factory` at read time. Observed addresses recorded by Identify are
+  merged into the same list by the library.
+- The library does not add observed addresses for a purely outbound loopback
+  connection to a peer listening on wildcard; advertised addresses stayed
+  listener-derived in every Phase 1 run.
 
 ---
 
 ## 6. Address discovery and advertisement
 
-### 6.1 Verified address flow
+Phase 1 separates three concepts that were previously conflated:
 
-- **Bind address:** `/ip4/0.0.0.0/tcp/<port>` (`headless.py:294`).
+| Concept | Meaning | Source of truth |
+|---|---|---|
+| **Bind (listen)** | Addresses the local sockets bind | `--listen-addr`, else `/ip4/0.0.0.0/tcp/<port>` |
+| **Observed** | Addresses remote peers report back via Identify | py-libp2p `ObservedAddrManager`, merged into `get_addrs()` |
+| **Advertised (announce)** | Addresses this peer shares with others | `--announce-addr` verbatim, else `host.get_addrs()` filtered through an `AddrsFactory` that rewrites wildcard binds to `--announce-host` |
+
+### 6.1 Verified address flow (after Phase 1)
+
+- **Bind address:** `--listen-addr` (repeatable) or
+  `/ip4/0.0.0.0/tcp/<port>` (`headless.py:_resolve_listen_addrs`).
 - **Port default:** `HeadlessService.__init__` converts `0` to `4001`
-  (`headless.py:113`). `DEFAULT_PORT = 9095` exists but is unused
-  (`headless.py:76`). README examples still show `9095`, while its own note says
-  peers default to `4001`.
-- **Advertised address:** constructed manually as
-  `/ip4/<announce_host>/tcp/<port>/p2p/<peer_id>` (`headless.py:295, 325`).
-  `announce_host` defaults to `"127.0.0.1"` in both `main.py` and
-  `HeadlessService` (`main.py:303-310`, `headless.py:111`).
-- **Observed addresses:** identify responses are cached for API display
-  (`headless.py:1414-1462`), but observed addresses are **not** used to update
-  the advertised address.
-- **AddrsFactory / announce_addrs:** not used, even though the installed
-  py-libp2p 0.8.1 supports both (`new_host` signature).
-- **host.get_addrs():** not used to produce the application's advertised
-  multiaddr.
-- **Wildcard normalization:** dial strings containing `/ip4/0.0.0.0/` or
-  `/ip6/::/` are rewritten to loopback before dialing (`headless.py:267-285`).
+  (`headless.py`). `DEFAULT_PORT = 9095` still exists but is unused. README
+  examples remain inconsistent.
+- **Advertised address:** derived at runtime from `host.get_addrs()` after
+  listeners start (`_refresh_advertised_addrs`). Wildcard binds are rewritten to
+  `announce_host` (default `127.0.0.1`) by `_make_addrs_factory`; concrete binds
+  are advertised as bound. `--announce-addr` overrides both by passing
+  `announce_addrs` to `new_host`.
+- **Wildcard protection:** `announce_host` cannot be `0.0.0.0`/`::`, and
+  `--announce-addr` values with wildcard hosts are rejected at startup.
+- **Observed addresses:** Identify is registered and remote `observed_addr`
+  values are recorded by the library and merged into `get_addrs()`. They are not
+  persisted and do not replace the factory result for local listeners.
+- **host.get_addrs():** now the single source of truth for announcement. The
+  hand-built `/ip4/<host>/tcp/<port>/p2p/<id>` string is gone.
+- **Wildcard dial normalization:** dial strings containing `/ip4/0.0.0.0/` or
+  `/ip6/::/` are still rewritten to loopback before dialing
+  (`_normalize_dial_addr`), so legacy shared addresses remain usable
+  same-machine.
 
 ### 6.2 Consequences
 
-- A peer started with defaults advertises loopback. A peer on another machine
-  cannot dial that announcement.
-- LAN use requires `--announce-host <LAN IP>` manually.
-- There is no public-IP discovery, NAT traversal, relay, or observed-address
-  based announcement.
-- There is no Docker/container handling; a container IP could be advertised if
-  `--announce-host` is set to it, but nothing detects or corrects that.
-- IPv6 is not supported by the listener or announcement.
-- Listener readiness and advertisement correctness are not observed/tested; the
-  string is computed before `host.run()`.
+- A peer started with defaults **still advertises loopback** (deliberate
+  backward compatibility), but now logs a warning naming the dialability
+  category: `loopback (same-machine only)`.
+- LAN use requires `--announce-host <LAN IP>` (verified working) or
+  `--announce-addr <multiaddr>`.
+- There is still no public-IP discovery, NAT traversal, relay, or automatic
+  observed-address promotion. A public deployment must supply an explicit
+  announce address.
+- There is still no Docker/container handling. A container that advertises its
+  internal IP is not reachable from the host or LAN; Phase 7 must address this.
+  Phase 1 records it as an explicit exception (see §15.5).
+- IPv6 loopback now works when requested via `--listen-addr`; IPv6 wildcard and
+  dual-stack behaviour are unit-tested in the factory but not exercised at
+  runtime.
+- Listener readiness is now observed, not assumed: `_verify_listeners()` reads
+  `host.get_transport_addrs()` and fails startup when a requested address did
+  not bind.
 
 ### 6.3 Bootstrap list
 
@@ -776,21 +819,22 @@ passes and asserts the exception propagates and the service is marked failed.
 
 ### 10.3 Test coverage gaps
 
-Verified absent:
+Verified absent at the end of Phase 0; **Phase 1 closed the first three** with
+`tests/test_address_config.py` (25 tests, including two real hosts that connect
+and publish) and `tests/test_headless_lifecycle.py` (lifecycle coverage added
+before Phase 1). Remaining gaps:
 
-- No test starts a real `HeadlessService` host/listener.
-- No test dials a second peer or verifies inbound GossipSub.
 - No test covers the Tornado API handlers end-to-end.
 - No test covers the Textual/Kivy adapters or React UI.
 - No test covers identity persistence (there is none).
 - No test covers data-directory behaviour (there is none).
-- No test covers shutdown, signal handling, or repeated start/stop.
+- No test covers signal delivery (the lifecycle tests cover `request_stop()`).
 - No test covers packaging contents or installed console-script behaviour.
 - No py-peer CI workflow runs any of these checks.
 
 The existing tests are useful regression tests for bounded history, queue
-behaviour, path containment, topic filtering, startup failure, and JSON
-validation. They are currently **untracked** (`?? py-peer/tests/`).
+behaviour, path containment, topic filtering, startup failure, JSON validation,
+lifecycle teardown, and address configuration.
 
 ---
 
@@ -816,8 +860,20 @@ Do not choose this silently. Also stop logging the seed.
 
 Changing advertised addresses affects dialability. The current default is
 loopback, so the existing "working" local demos do not prove LAN/remote
-behaviour. Phase 1 must verify listener/inbound/outbound and define the
-supported network model before Docker work.
+behaviour.
+
+Phase 1 update: listener verification, wildcard rewriting, explicit announce
+addresses, LAN loopback→private announcement, and two-peer TCP dial/publish were
+verified (§15). Residual risk:
+
+- The default remains loopback (compatibility decision), so packaging/docs must
+  tell LAN users to pass `--announce-host` or `--announce-addr`.
+- Container/NAT/public reachability is still untested; Docker is Phase 7.
+- No automated NAT/remote test exists; only same-machine and same-LAN. The LAN
+  test was a manual runtime check from a second process on the same host using
+  its own LAN IP, not a second physical machine.
+- QUIC/WebSocket/WebRTC/WebTransport remain disabled, so deployments that
+  expect non-TCP transports are not supported yet.
 
 ### 11.3 Storage migration risk
 
@@ -883,22 +939,28 @@ Still open:
 
 This follows the brief's phase order. Do not delete Kivy or write Docker first.
 
-### Phase 1 — Transport/address correctness (next)
+### Phase 1 — Transport/address correctness (done — see §15)
 
 **Goal:** prove TCP listener and inbound/outbound behaviour, then fix
 announcement.
 
-Likely touch points:
+Delivered:
 
-- `headless.py`: listener/announce construction, `new_host` options, observed
-  address handling, startup logging, readiness ordering.
-- `main.py`: announce/listen configuration flags and validation.
-- New tests: start one/two hosts on distinct ports, assert listener bound,
-  connect, publish/receive, assert advertised address contents.
+- `headless.py`: `listen_addrs`/`announce_addrs` constructor inputs,
+  `_resolve_listen_addrs`, `_resolve_announce_addrs`, `_make_addrs_factory`,
+  `_verify_listeners`, `_refresh_advertised_addrs`, address classification, and
+  per-address port probing.
+- `main.py`: repeatable `--listen-addr` / `--announce-addr`, wired into all four
+  `HeadlessService` construction sites.
+- `api/node.py`: `/node/info` and `/node/multiaddr` expose the advertised list
+  and bound listen addresses.
+- `tests/test_address_config.py`: 25 tests (parsing, factory, wildcard
+  rejection, listener verification, two-peer connect/publish).
 
-Must decide: default `announce_host` (loopback vs auto-detect LAN vs explicit
-required), IPv4/IPv6 scope, and whether `host.get_addrs()`/`announce_addrs`/
-`addrs_factory` should replace the hand-built string.
+Decisions: default `announce_host` stays `127.0.0.1` with a warning; wildcard
+listeners are rewritten; concrete listeners are advertised as bound; explicit
+`--announce-addr` wins. Docker/external connectivity is deferred to Phase 7 as
+an explicit exception (§15.5).
 
 ### Phase 2 — Unified service layer and shared runtime
 
@@ -972,6 +1034,10 @@ Likely touch points:
    dialable with the installed fork.
 2. Actual `host.get_addrs()` output for the wildcard listener and whether
    identify observed addresses would be usable behind NAT.
+   *Phase 1 answer: `get_addrs()` returns `/ip4/0.0.0.0/...` verbatim (no
+   normalization); observed addresses were not added after a loopback
+   connection. Phase 1 rewrites wildcards through an `AddrsFactory`. NAT
+   behaviour remains unknown (§15.5).*
 3. Whether two default peers (same seed) can coexist/connect without identity
    confusion in practice (peer-ID collision is expected from the code).
 4. Whether a *new* instance can start cleanly after a previous instance stopped;
@@ -1016,3 +1082,177 @@ Likely touch points:
 Phase 1, with two blocking decisions recorded above: identity migration policy
 and the supported network/deployment model. No application code was changed in
 this phase; the only addition is this audit document.
+
+---
+
+## 15. Phase 1 — Transport audit and announced-address correctness (implemented)
+
+**Status:** implemented and verified on 2026-11-08. All commands below were run
+against the working tree; nothing in this section is inferred.
+
+### 15.1 Transport inventory (the brief's ten questions)
+
+| Question | TCP/IPv4 | QUIC | WebSocket | WebRTC | WebTransport |
+|---|---|---|---|---|---|
+| Available in installed py-libp2p | Yes | Yes, `aioquic 1.7.0` installed | Module ships, **`websockets` not installed** | Module ships, **`aiortc` not installed** | Module ships; needs TLS/QUIC stack |
+| Imported/registered with host | Yes (auto-detected from `listen_addrs`) | No (app rejects QUIC listen addresses) | No | No | No |
+| Enabled by configuration | Yes, default | No | No | No | No |
+| Host starts a listener | Yes, verified | No (experimentally yes, §15.4) | No | No | No |
+| Local bind | `--listen-addr`, default `/ip4/0.0.0.0/tcp/<port>` | N/A | N/A | N/A | N/A |
+| Accepts inbound | Yes, verified (§15.4) | Experimentally yes | N/A | N/A | N/A |
+| Can dial | Yes, verified (§15.4) | Experimentally yes | N/A | N/A | N/A |
+| Advertised | Yes, via `get_addrs()` + factory | N/A | N/A | N/A | N/A |
+| Works on macOS/Linux | Yes (macOS verified; Linux expected via the same socket path, not run in this phase) | Not supported | N/A | N/A | N/A |
+| Known limitations | SO_REUSEPORT hides port conflicts; no NAT/public discovery | Deliberately disabled in Phase 1; enabling it changes the transport mix (a QUIC-only listen list would remove TCP dialing). Rejected with a clear startup error | Missing dependency; `pyproject.toml` does not declare it | Missing dependency; `aiortc` is heavy and not declared | Not enabled; certificate manager not configured |
+
+Why the other transports were **not** enabled in this phase:
+
+- **QUIC** — `aioquic` is installed, and an experiment (two peers, QUIC-only
+  listen addresses) successfully bound `/ip4/.../udp/<p>/quic-v1`, advertised it,
+  connected, and delivered a GossipSub message (§15.4, scenario 11). It is not
+  enabled because Phase 1 is scoped to TCP/address correctness and because
+  py-libp2p builds its transport list from the listen addresses: a QUIC-only
+  listen list would silently remove TCP dialing, which the bootstrap path still
+  needs. `--listen-addr .../quic-v1` is therefore rejected with an explicit
+  error rather than half-supported.
+- **WebSocket** — the transport module imports `websockets`, which is not in the
+  environment or `pyproject.toml`. Enabling it would require a dependency change
+  and browser/React integration testing.
+- **WebRTC** — requires `aiortc` (not installed, not declared) plus signalling
+  design; out of scope.
+- **WebTransport** — requires TLS certificate management and an explicit
+  `enable_webtransport` path; no consumer exists yet.
+
+### 15.2 Address model implemented
+
+```
+--listen-addr (repeatable)         -> sockets bind here
+   default: /ip4/0.0.0.0/tcp/<port>
+
+host.get_transport_addrs()         -> what actually bound (may be 0.0.0.0)
+
+--announce-addr (repeatable)       -> advertised verbatim (wins over factory)
+   else AddrsFactory rewrites      -> wildcard bind becomes /ip4/<announce-host>/...
+   else concrete bind              -> advertised as bound
+
+host.get_addrs()                   -> advertised list + /p2p/<peer-id>
+                                      (library also merges Identify-observed
+                                       addresses into this list)
+```
+
+Rules enforced at startup:
+
+- Listen addresses must parse and contain a plain TCP protocol. QUIC,
+  WebSocket, WebRTC, and WebTransport listen addresses are rejected with an
+  explicit "not enabled in this build" error (see §15.1 for why).
+- `--announce-addr` / `announce_host` may not be `0.0.0.0`, `::`, or `::0`.
+- A listener that fails to bind is a startup error
+  (`RuntimeError: libp2p host did not start any listener`), not a silent
+  warning.
+- A listen port of 0 means "ephemeral": the requested address matches the
+  port the OS actually assigned during listener verification.
+- Every advertised address is classified and logged:
+  `wildcard` / `loopback` / `link-local` / `private/LAN` / `public/unknown`.
+  Loopback emits a warning with the fix (`--announce-host` / `--announce-addr`).
+
+### 15.3 Code changes
+
+| File | Change |
+|---|---|
+| `headless.py` | `listen_addrs`/`announce_addrs` inputs; `_resolve_listen_addrs`, `_resolve_announce_addrs`, `_make_addrs_factory`, `_verify_listeners`, `_refresh_advertised_addrs`, `_is_wildcard_addr`, `_classify_announced_addr`; per-address port probing with `EADDRINUSE`/`EADDRNOTAVAIL`; host creation passes `listen_addrs` (transport auto-detection), `announce_addrs`, and `addrs_factory`; `full_multiaddrs`/`transport_addrs`; `get_connection_info()` exposes both lists |
+| `main.py` | repeatable `--listen-addr` / `--announce-addr`; wired into all four `HeadlessService` construction sites |
+| `api/node.py` | `/api/v1/node/info` and `/api/v1/node/multiaddr` return `multiaddrs` and `listen_addrs` |
+| `tests/test_address_config.py` | 25 tests: listen parsing/validation, factory rewrite/dedupe/family handling, announce validation, wildcard detection, classification, listener verification, default/explicit/announce integration, two-peer connect + publish |
+
+Behavior intentionally preserved:
+
+- Default port remains `4001` (`0` maps to `4001`).
+- Default `announce_host` remains `127.0.0.1`; local workflows are unchanged.
+- TCP remains the only enabled transport.
+- Wildcard dial normalization (`_normalize_dial_addr`) still accepts legacy
+  `/ip4/0.0.0.0/...` strings.
+
+### 15.4 Connectivity test matrix (executed)
+
+| # | Scenario | Configuration | Expected | Result |
+|---|---|---|---|---|
+| 1 | Default startup | no flags | bind `0.0.0.0`, advertise `127.0.0.1` + warning | **PASS** — `Listener(s) active: /ip4/0.0.0.0/tcp/<p>`; advertised `/ip4/127.0.0.1/tcp/<p>/p2p/<id>`; class `loopback (same-machine only)` |
+| 2 | Same-machine two peers | two ports, seeds A/B | connect + publish/receive | **PASS** — both connected; B received `hello-phase1` / `phase1-after` |
+| 3 | Explicit concrete loopback bind | `--listen-addr /ip4/127.0.0.1/tcp/<p>` | bind and advertise that exact address | **PASS** — no rewrite; advertised `/ip4/127.0.0.1/...` |
+| 4 | Explicit announce | `--announce-addr /ip4/127.0.0.1/tcp/<p>` | advertised verbatim | **PASS** — `full_multiaddrs == [<announce>/p2p/<id>]` |
+| 5 | LAN announcement | `announce_host=10.96.120.90` | advertise LAN IP; dial from another local process | **PASS** — class `private/LAN`; peer connected and received `lan-hello` |
+| 6 | IPv6 loopback | `--listen-addr /ip6/::1/tcp/<p>` | bind and advertise IPv6 | **PASS** — `transport_addrs=['/ip6/::1/tcp/56126']`; advertised `/ip6/::1/tcp/56126/p2p/<id>` |
+| 7 | Bad bind (non-local IP) | `--listen-addr /ip4/192.0.2.1/tcp/<p>` | startup failure, not a zombie | **PASS** — probe warns `not assigned`; `_verify_listeners` raises; service `failed=True`, thread exits |
+| 8 | CLI plumbing | `--headless --listen-addr ... --announce-addr ...` | flags reach the service | **PASS** — log shows configured listen + explicit announce; listener active; SIGINT exits 0 |
+| 9 | Docker / container | none | must be explicit exception | **NOT RUN** — see §15.5 |
+| 10 | NAT / public internet | none | must be explicit exception | **NOT RUN** — see §15.5 |
+| 11 | QUIC (experiment only) | `--listen-addr /ip4/127.0.0.1/udp/<p>/quic-v1` on two peers | bind, advertise, connect, publish | **PASS (experimental)** — `A transports: ['QUICTransport']`; advertised `/ip4/127.0.0.1/udp/52798/quic-v1/p2p/<id>`; connected; received `quic-hello`. Not exposed in the app because a QUIC-only listen list removes TCP dialing (§15.1) |
+| 12 | Ephemeral port | `--listen-addr /ip4/127.0.0.1/tcp/0` | bind an OS-assigned port and advertise it | **PASS** — `transport_addrs=['/ip4/127.0.0.1/tcp/57444']`; advertised the assigned port |
+
+Cross-machine LAN was not available. Test 5 used the host's own LAN IP from a
+second process; it proves the announcement reaches a routable address, not that
+a second physical machine can reach it.
+
+### 15.5 Explicit exceptions and gaps
+
+- **Docker/container connectivity is not tested** and is deferred to Phase 7.
+  Binding `0.0.0.0` inside a container advertises a container-internal IP unless
+  the operator passes `--announce-addr` with a host-reachable address/port
+  mapping. No port mapping, health check, or NAT correction exists.
+- **External/NAT/public reachability is not tested.** There is no UPnP, AutoNAT,
+  relay, or public-IP discovery. Public deployments must set an explicit announce
+  address and ensure the port is forwarded.
+- **Observed-address promotion is untested behind NAT.** The library records
+  Identify-observed addresses, but Phase 1 did not verify that a NATed peer can
+  advertise its public address automatically (it is not expected to).
+- **IPv6 wildcard and dual-stack** are unit-tested in the factory only; runtime
+  was verified for `::1` only.
+- **Cross-platform listener probing** covers IPv4 only; the port-in-use warning
+  skips IPv6 addresses.
+- **QUIC/WebSocket/WebRTC/WebTransport** remain disabled for the dependency and
+  scope reasons in §15.1.
+
+### 15.6 Verification commands and results
+
+```text
+.venv/bin/python -m unittest tests.test_address_config -v
+  -> Ran 25 tests ... OK
+
+.venv/bin/python -m unittest discover -s tests
+  -> Ran 54 tests in 1.086s ... OK
+
+.venv/bin/python -m py_compile headless.py main.py
+  -> COMPILE_OK
+
+.venv/bin/python main.py --help
+  -> lists --listen-addr, --announce-addr, --announce-host
+
+.venv/bin/python main.py --headless --nick cli --port <p> \
+    --listen-addr /ip4/127.0.0.1/tcp/<p> \
+    --announce-addr /ip4/127.0.0.1/tcp/<p>
+  -> Configured listen address(es): /ip4/127.0.0.1/tcp/<p>
+  -> Using explicit announce address(es): /ip4/127.0.0.1/tcp/<p>
+  -> Listener(s) active: /ip4/127.0.0.1/tcp/<p>
+  -> exit 0 on SIGINT
+```
+
+Runtime scenarios 1–8 are recorded in §15.4 with their observed log lines.
+
+### 15.7 Acceptance criteria (brief §5.1–5.4)
+
+- [x] Transport inventory records availability, registration, configuration,
+      listener, inbound, outbound, advertisement, platforms, and limitations.
+- [x] Bind, observed, and advertised addresses are defined and handled
+      separately.
+- [x] Listen and advertise addresses are configurable from the CLI.
+- [x] Listener startup is verified rather than assumed, and failure is fatal.
+- [x] Same-machine connectivity is tested (two real hosts, publish/receive).
+- [x] LAN-style connectivity is tested with a private address.
+- [x] Docker/NAT gaps are documented as explicit exceptions (Phase 7).
+- [x] Address decisions are logged at startup and exposed through the API.
+
+**Phase 1 conclusion:** TCP transport and announced-address correctness are
+verified for same-machine and private-LAN use. The default remains loopback for
+backward compatibility and warns loudly. Container, NAT, and non-TCP transports
+are deliberately out of scope and recorded as exceptions rather than claimed as
+working.

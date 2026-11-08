@@ -1,9 +1,9 @@
 """
 Node info endpoints.
 
-GET /api/v1/node/info     - peer ID, nickname, multiaddr, port, ready state
+GET /api/v1/node/info     - peer ID, nickname, multiaddr(s), port, ready state
 GET /api/v1/node/status   - running, ready, uptime
-GET /api/v1/node/multiaddr - full multiaddr string
+GET /api/v1/node/multiaddr - advertised multiaddr(s) and bound listen addresses
 """
 
 import time
@@ -23,6 +23,8 @@ class NodeInfoHandler(BaseHandler):
             "peer_id": info.get("peer_id"),
             "nickname": info.get("nickname"),
             "multiaddr": info.get("multiaddr"),
+            "multiaddrs": info.get("multiaddrs", []),
+            "listen_addrs": info.get("listen_addrs", []),
             "port": self.service.port,
             "ready": self.service.ready,
             "uptime_seconds": round(time.time() - _start_time, 1),
@@ -52,4 +54,6 @@ class NodeMultiaddrHandler(BaseHandler):
             return
         self.send_success({
             "multiaddr": self.service.full_multiaddr,
+            "multiaddrs": list(self.service.full_multiaddrs),
+            "listen_addrs": list(self.service.transport_addrs),
         })

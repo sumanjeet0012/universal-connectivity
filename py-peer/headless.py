@@ -6,6 +6,8 @@ without any UI. It communicates with the UI through queues and events.
 """
 
 import json
+import ipaddress
+import errno
 import logging
 import os
 import socket
@@ -108,13 +110,27 @@ class HeadlessService:
     Headless service that manages libp2p components and provides data to UI through queues.
     """
 
-    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1"):
+    def __init__(self, nickname: str, port: int = 0, connect_addrs: List[str] = None, ui_mode: bool = False, strict_signing: bool = True, seed: str = None, topic: str = None, announce_host: str = "127.0.0.1", listen_addrs: List[str] = None, announce_addrs: List[str] = None):
         self.nickname = nickname
         self.port = port if port != 0 else 4001
         self.connect_addrs = connect_addrs or []
-        # Host advertised in the multiaddr shared with other peers. The listen socket
-        # binds 0.0.0.0, but 0.0.0.0 is not a valid dial target, so advertise a
-        # concrete address instead (override with --announce-host for LAN access).
+
+        # Address model (deliberately separate concepts):
+        #   listen  : where sockets are opened. Default binds all IPv4
+        #             interfaces on the configured port.
+        #   announce: what host.get_addrs() shares with other peers. Explicit
+        #             announce_addrs win; otherwise wildcard listen addresses
+        #             are rewritten to announce_host (0.0.0.0 is never
+        #             advertised because it is not a dial target).
+        #   observed: addresses reported by Identify and recorded by
+        #             py-libp2p's ObservedAddrManager, then merged into
+        #             get_addrs() by the library.
+        self.listen_addrs = list(listen_addrs) if listen_addrs else None
+        self.announce_addrs = list(announce_addrs) if announce_addrs else None
+        # Host advertised in the multiaddr shared with other peers. The listen
+        # socket binds 0.0.0.0, but 0.0.0.0 is not a valid dial target, so
+        # advertise a concrete address instead (override with --announce-host
+        # for LAN access, or --announce-addr for full control).
         self.announce_host = announce_host
         self.ui_mode = ui_mode  # Flag to control logging behavior
         self.strict_signing = strict_signing  # Flag to control message signing
@@ -137,6 +153,8 @@ class HeadlessService:
         self.running = False
         self.ready = False
         self.full_multiaddr = None
+        self.full_multiaddrs = []
+        self.transport_addrs = []  # raw bound listener addresses (may include 0.0.0.0)
         
         # Communication with UI
         self.message_queue = None  # UI receives messages from headless
@@ -254,9 +272,9 @@ class HeadlessService:
                 except Exception:
                     logger.exception("Error in on_stopped callback")
     
-    def _warn_if_port_in_use(self):
+    def _warn_if_port_in_use(self, listen_addrs):
         """
-        Warn when the listen port is already taken by another process.
+        Warn when a listen port is already taken by another process.
 
         py-libp2p enables SO_REUSEPORT (for DCUtR hole punching), so a second
         peer can bind the same port without error. Inbound connections are then
@@ -266,20 +284,255 @@ class HeadlessService:
         fails while a listener is active, so we can detect the situation and
         tell the user to pick a different port.
         """
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            probe.bind(("0.0.0.0", self.port))
-        except OSError:
-            logger.warning(
-                f"⚠️  Port {self.port} is already in use by another process. "
-                "libp2p uses SO_REUSEPORT, so this peer will still bind, but "
-                "incoming connections may be handled by the other process and "
-                "fail with 'handshake failed when upgrading to secure connection'. "
-                "Start each local peer with a distinct port, e.g. --port 4001 / --port 4002."
+        probed = set()
+        for addr in listen_addrs:
+            protocols = {p.name for p in addr.protocols()}
+            if "tcp" not in protocols or "ip4" not in protocols:
+                continue
+            host = addr.value_for_protocol("ip4")
+            port = int(addr.value_for_protocol("tcp"))
+            bind_host = "0.0.0.0" if host == "0.0.0.0" else host
+            if (bind_host, port) in probed:
+                continue
+            probed.add((bind_host, port))
+
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind((bind_host, port))
+            except OSError as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    logger.warning(
+                        f"⚠️  Port {port} on {bind_host} is already in use by "
+                        "another process. libp2p uses SO_REUSEPORT, so this peer "
+                        "will still bind, but incoming connections may be handled "
+                        "by the other process and fail with 'handshake failed when "
+                        "upgrading to secure connection'. Start each local peer "
+                        "with a distinct port, e.g. --port 4001 / --port 4002."
+                    )
+                elif exc.errno == errno.EADDRNOTAVAIL:
+                    logger.warning(
+                        f"Listen host {bind_host}:{port} is not assigned to this "
+                        "machine; the listener will fail to start."
+                    )
+                else:
+                    logger.warning(
+                        f"Could not probe listen address {bind_host}:{port}: {exc}"
+                    )
+            finally:
+                probe.close()
+
+    # Transports this build can actually construct. WebSocket is omitted
+    # because the `websockets` dependency is not installed; WebRTC and
+    # WebTransport need extra configuration (and `aiortc` for WebRTC).
+    # QUIC is intentionally excluded: it works experimentally (see
+    # docs/architecture-audit.md §15.1) but enabling it changes the transport
+    # mix and is out of Phase 1 scope, so it is rejected explicitly instead of
+    # being silently accepted without a registered transport.
+    _UNSUPPORTED_LISTEN_PROTOCOLS = (
+        "quic",
+        "quic-v1",
+        "ws",
+        "wss",
+        "webrtc",
+        "webrtc-direct",
+        "webtransport",
+    )
+
+    def _resolve_listen_addrs(self) -> List[multiaddr.Multiaddr]:
+        """Parse and validate the configured listen addresses."""
+        raw = self.listen_addrs or [f"/ip4/0.0.0.0/tcp/{self.port}"]
+        resolved = []
+        for item in raw:
+            try:
+                addr = multiaddr.Multiaddr(item)
+            except Exception as exc:
+                raise ValueError(f"Invalid listen address {item!r}: {exc}") from exc
+            protocols = {p.name for p in addr.protocols()}
+            unsupported = [p for p in self._UNSUPPORTED_LISTEN_PROTOCOLS if p in protocols]
+            if unsupported:
+                raise ValueError(
+                    f"Unsupported listen address {item!r}: transport "
+                    f"{unsupported[0]!r} is not enabled in this build "
+                    "(plain TCP only)"
+                )
+            if "tcp" not in protocols:
+                raise ValueError(
+                    f"Unsupported listen address {item!r}: expected a TCP multiaddr"
+                )
+            resolved.append(addr)
+        return resolved
+
+    def _resolve_announce_addrs(self) -> List[multiaddr.Multiaddr]:
+        """Parse explicit announce addresses and reject undialable wildcards."""
+        if not self.announce_addrs:
+            return []
+        resolved = []
+        for item in self.announce_addrs:
+            try:
+                addr = multiaddr.Multiaddr(item)
+            except Exception as exc:
+                raise ValueError(
+                    f"Invalid announce address {item!r}: {exc}"
+                ) from exc
+            protocols = {p.name for p in addr.protocols()}
+            if "ip4" in protocols and addr.value_for_protocol("ip4") == "0.0.0.0":
+                raise ValueError(
+                    f"Announce address {item!r} uses the wildcard host 0.0.0.0; "
+                    "use a concrete dialable IP"
+                )
+            if "ip6" in protocols and addr.value_for_protocol("ip6") in ("::", "::0"):
+                raise ValueError(
+                    f"Announce address {item!r} uses the wildcard host ::; "
+                    "use a concrete dialable IP"
+                )
+            resolved.append(addr)
+        return resolved
+
+    def _make_addrs_factory(self):
+        """Return an AddrsFactory that never advertises a wildcard address.
+
+        The factory only rewrites wildcard listeners (the socket is bound on
+        all interfaces, so a concrete host is valid). A listener explicitly
+        bound to a concrete address is advertised as-is; if that address is
+        loopback, the caller gets a clear warning rather than a silent rewrite
+        that would point at an interface the peer is not listening on.
+        """
+        if self.announce_addrs:
+            return None  # explicit static addresses win
+        host = (self.announce_host or "").strip()
+        if not host:
+            return None
+        if host in ("0.0.0.0", "::", "::0"):
+            raise ValueError(
+                "announce_host cannot be a wildcard address; use a concrete "
+                "dialable IP (or an explicit --announce-addr)"
             )
-        finally:
-            probe.close()
+        announce_is_v6 = ":" in host
+
+        def _factory(candidates):
+            advertised = []
+            seen = set()
+            for addr in candidates:
+                text = str(addr)
+                protocols = {p.name for p in addr.protocols()}
+                if "ip4" in protocols:
+                    value = addr.value_for_protocol("ip4")
+                    if value == "0.0.0.0":
+                        if announce_is_v6:
+                            continue
+                        text = text.replace(
+                            "/ip4/0.0.0.0/", f"/ip4/{host}/", 1
+                        )
+                elif "ip6" in protocols:
+                    value = addr.value_for_protocol("ip6")
+                    if value in ("::", "::0"):
+                        if not announce_is_v6:
+                            continue
+                        text = text.replace("/ip6/::/", f"/ip6/{host}/", 1)
+                if text not in seen:
+                    seen.add(text)
+                    advertised.append(multiaddr.Multiaddr(text))
+            return advertised
+
+        return _factory
+
+    @staticmethod
+    def _addr_match_key(addr):
+        """Normalize a multiaddr for listener comparison.
+
+        A requested port of 0 means "ephemeral"; it is represented as ``None``
+        so it matches whatever port the OS assigned.
+        """
+        protocols = {p.name for p in addr.protocols()}
+        family = "ip4" if "ip4" in protocols else "ip6" if "ip6" in protocols else None
+        host = addr.value_for_protocol(family) if family else None
+        port = None
+        for proto in ("tcp", "udp"):
+            if proto in protocols:
+                port = int(addr.value_for_protocol(proto))
+                break
+        return (family, host, None if port == 0 else port)
+
+    def _verify_listeners(self, requested: List[multiaddr.Multiaddr]) -> None:
+        """Verify that every requested listener actually bound."""
+        bound = [str(addr) for addr in self.host.get_transport_addrs()]
+        self.transport_addrs = bound
+        if not bound:
+            raise RuntimeError("libp2p host did not start any listener")
+        bound_keys = [self._addr_match_key(multiaddr.Multiaddr(item)) for item in bound]
+        missing = []
+        for req in requested:
+            family, host, port = self._addr_match_key(req)
+            matched = any(
+                b_family == family
+                and b_host == host
+                and (port is None or b_port == port)
+                for b_family, b_host, b_port in bound_keys
+            )
+            if not matched:
+                missing.append(str(req))
+        if missing:
+            raise RuntimeError(
+                "libp2p failed to start listener(s): " + ", ".join(missing)
+            )
+        logger.info(f"Listener(s) active: {', '.join(bound)}")
+
+    @staticmethod
+    def _is_wildcard_addr(addr) -> bool:
+        """True when a multiaddr binds a wildcard host (0.0.0.0 / ::)."""
+        protocols = {p.name for p in addr.protocols()}
+        if "ip4" in protocols:
+            return addr.value_for_protocol("ip4") == "0.0.0.0"
+        if "ip6" in protocols:
+            return addr.value_for_protocol("ip6") in ("::", "::0")
+        return False
+
+    @staticmethod
+    def _classify_announced_addr(addr_str: str) -> str:
+        """Describe address reachability without claiming it was tested."""
+        try:
+            addr = multiaddr.Multiaddr(addr_str)
+            protocols = {p.name for p in addr.protocols()}
+            if "ip4" in protocols:
+                ip = ipaddress.ip_address(addr.value_for_protocol("ip4"))
+            elif "ip6" in protocols:
+                ip = ipaddress.ip_address(addr.value_for_protocol("ip6"))
+            else:
+                return "non-IP"
+        except Exception:
+            return "unparsed"
+        if ip.is_unspecified:
+            return "wildcard (not dialable)"
+        if ip.is_loopback:
+            return "loopback (same-machine only)"
+        if ip.is_link_local:
+            return "link-local (same link only)"
+        if ip.is_private:
+            return "private/LAN (reachable only on that network)"
+        return "public/unknown (reachability not verified)"
+
+    def _refresh_advertised_addrs(self) -> None:
+        """Snapshot and log host.get_addrs() after listeners are ready."""
+        advertised = [str(addr) for addr in self.host.get_addrs()]
+        self.full_multiaddrs = advertised
+        self.full_multiaddr = advertised[0] if advertised else None
+        if not advertised:
+            logger.warning(
+                "No advertised addresses: this peer can dial out, but has no "
+                "address to share. Check --listen-addr / --announce-host / "
+                "--announce-addr (the address family must match)."
+            )
+            return
+        for addr in advertised:
+            category = self._classify_announced_addr(addr)
+            logger.info(f"Advertised address [{category}]: {addr}")
+            if category.startswith("loopback"):
+                logger.warning(
+                    "Advertising a loopback address: only peers on this machine "
+                    "can dial it. Use --announce-host <LAN IP> or "
+                    "--announce-addr <multiaddr> for other peers."
+                )
 
     @staticmethod
     def _normalize_dial_addr(multiaddr_str: str) -> str:
@@ -306,12 +559,15 @@ class HeadlessService:
         secret = hashlib.sha256(self.seed.encode()).digest()
         logger.info(f"Using deterministic Ed25519 key derived from seed='{self.seed}'")
         key_pair = create_new_key_pair(seed=secret)
-        
-        # Create listen address (bind all interfaces) and a dialable address to advertise
-        listen_addr = multiaddr.Multiaddr(f"/ip4/0.0.0.0/tcp/{self.port}")
-        announce_addr = multiaddr.Multiaddr(f"/ip4/{self.announce_host}/tcp/{self.port}")
 
-        self._warn_if_port_in_use()
+        # Resolve bind vs advertised addresses before creating the host. The
+        # listen list is verified after host.run() starts the listeners; the
+        # advertised list is derived from host.get_addrs() at the same point.
+        listen_addrs = self._resolve_listen_addrs()
+        explicit_announce = self._resolve_announce_addrs()
+        addrs_factory = self._make_addrs_factory()
+
+        self._warn_if_port_in_use(listen_addrs)
 
         config = ConnectionConfig(
         min_connections=10,
@@ -326,6 +582,11 @@ class HeadlessService:
         self.host = new_host(
             key_pair=key_pair,
             connection_config=config,
+            # Pass the listen list so libp2p auto-detects the transports it must
+            # register (TCP today; QUIC when a QUIC listen address is supplied).
+            listen_addrs=listen_addrs,
+            announce_addrs=explicit_announce or None,
+            addrs_factory=addrs_factory,
             # bootstrap = BOOTSTRAP_PEERS
         )
 
@@ -339,10 +600,26 @@ class HeadlessService:
         self.dht = KadDHT(self.host, DHTMode.SERVER, enable_random_walk=True)
         logger.info("✅ DHT created with random walk enabled")
         
-        self.full_multiaddr = f"{announce_addr}/p2p/{self.host.get_id()}"
         logger.info(f"Host created with PeerID: {self.host.get_id()}")
-        logger.info(f"Listening on: {listen_addr}")
-        logger.info(f"Full multiaddr: {self.full_multiaddr}")
+        logger.info(
+            "Configured listen address(es): "
+            + ", ".join(str(addr) for addr in listen_addrs)
+        )
+        if explicit_announce:
+            logger.info(
+                "Using explicit announce address(es): "
+                + ", ".join(str(addr) for addr in explicit_announce)
+            )
+        elif any(self._is_wildcard_addr(addr) for addr in listen_addrs):
+            logger.info(
+                f"Wildcard listeners will be advertised as {self.announce_host!r} "
+                "(configure --announce-host or --announce-addr to change)"
+            )
+        else:
+            logger.info(
+                "No wildcard listeners: advertised addresses are the concrete "
+                "bound addresses from the host"
+            )
         
         # Log GossipSub protocol configuration
         logger.info(f"📋 Configuring GossipSub with protocols: {PROTOCOL_ID_LIST}")
@@ -373,7 +650,12 @@ class HeadlessService:
         logger.info("✅ Bitswap client and MerkleDag created for file sharing")
         
         # Start host and pubsub services
-        async with self.host.run(listen_addrs=[listen_addr]):
+        async with self.host.run(listen_addrs=listen_addrs):
+            # Listeners are bound before host.run() yields. Verify that the
+            # requested addresses really started, then derive the advertised
+            # list from the live host (never from a precomputed string).
+            self._verify_listeners(listen_addrs)
+            self._refresh_advertised_addrs()
             logger.info("📡 Initializing PubSub, GossipSub, and DHT services...")
             try:
                 async with background_trio_service(self.pubsub):
@@ -1062,6 +1344,8 @@ class HeadlessService:
             'peer_id': str(self.host.get_id()),
             'nickname': self.nickname,
             'multiaddr': self.full_multiaddr,
+            'multiaddrs': list(self.full_multiaddrs),
+            'listen_addrs': list(self.transport_addrs),
             'connected_peers': self.chat_room.get_connected_peers() if self.chat_room else set(),
             'peer_count': self.chat_room.get_peer_count() if self.chat_room else 0
         }

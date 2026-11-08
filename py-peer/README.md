@@ -297,7 +297,9 @@ python main.py --api-routes
 | `--headless` | Run without UI (logs only) | `--headless` |
 | `-c, --connect ADDR` | Connect to specific peer | `-c /ip4/...` |
 | `-p, --port PORT` | Set listening port | `-p 8080` |
-| `--announce-host HOST` | Host advertised in your multiaddr (default `127.0.0.1`) | `--announce-host 192.168.1.50` |
+| `--announce-host HOST` | Host advertised for wildcard listeners (default `127.0.0.1`; ignored when `--announce-addr` is given) | `--announce-host 192.168.1.50` |
+| `--listen-addr MULTIADDR` | Multiaddr to listen on (repeatable). Default `/ip4/0.0.0.0/tcp/<port>` | `--listen-addr /ip4/127.0.0.1/tcp/4001` |
+| `--announce-addr MULTIADDR` | Multiaddr advertised verbatim (repeatable). Overrides `--announce-host`; wildcard hosts are rejected | `--announce-addr /ip4/192.168.1.50/tcp/4001` |
 | `-t, --topic TOPIC` | Set custom default topic | `-t my-topic` |
 | `-s, --seed SEED` | Seed for deterministic peer ID | `-s 12345` |
 | `-v, --verbose` | Enable debug logging | `-v` |
@@ -332,6 +334,38 @@ python main.py --kivy --nick Bob --connect /ip4/192.168.1.100/tcp/9095/p2p/QmXXX
 > python main.py --seed 2 --port 4002 --api --api-port 8766
 > # then connect to /ip4/127.0.0.1/tcp/4002/p2p/<seed-2-peer-id>
 > ```
+
+### Addresses: listen vs advertised
+
+The peer tracks three address concepts separately:
+
+| Concept | What it means | How to set it |
+|---|---|---|
+| **Listen (bind)** | Interfaces/ports the sockets bind | `--listen-addr` (repeatable); default `/ip4/0.0.0.0/tcp/<port>` |
+| **Advertised** | Addresses shared with other peers | Derived from the live listener. Wildcard binds are rewritten to `--announce-host`; `--announce-addr` overrides both |
+| **Observed** | Addresses remote peers report via Identify | Recorded by py-libp2p; not user-configurable |
+
+Notes:
+
+- The default `--announce-host` is `127.0.0.1`, so a default peer can only be
+  dialled from the same machine. The startup log prints the dialability class and
+  warns when the advertised address is loopback.
+- On a LAN, pass your machine's address:
+  ```bash
+  python main.py --nick Alice --port 4001 --announce-host 192.168.1.50
+  ```
+- For full control (multiple addresses, IPv6, or a host port mapping), pass
+  one or more concrete multiaddrs:
+  ```bash
+  python main.py --nick Alice --listen-addr /ip6/::1/tcp/4001 \
+      --announce-addr /ip6/::1/tcp/4001
+  ```
+- Wildcard hosts (`0.0.0.0`, `::`) are rejected as announce addresses because
+  they are not dial targets.
+- Listener startup is verified. If a requested address cannot bind, the peer
+  fails to start instead of advertising an address nothing is listening on.
+- Docker/NAT deployments must announce a host-reachable address; automatic
+  public-address discovery is not implemented.
 
 ## 🖥️ User Interfaces
 

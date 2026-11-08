@@ -164,6 +164,8 @@ async def main_async(args):
         nickname=nickname,
         port=args.port,
         announce_host=args.announce_host,
+        listen_addrs=args.listen_addrs or None,
+        announce_addrs=args.announce_addrs or None,
         connect_addrs=args.connect,
         strict_signing=strict_signing,
         seed=args.seed,
@@ -376,8 +378,27 @@ def main():
         type=str,
         default="127.0.0.1",
         dest="announce_host",
-        help="Host advertised in this peer's multiaddr (default: 127.0.0.1; "
-             "use your LAN IP so peers on other machines can dial it)"
+        help="Host advertised for wildcard listeners (default: 127.0.0.1; "
+             "use your LAN IP so peers on other machines can dial it). "
+             "Ignored when --announce-addr is given."
+    )
+    parser.add_argument(
+        "--listen-addr",
+        action="append",
+        default=[],
+        dest="listen_addrs",
+        metavar="MULTIADDR",
+        help="Multiaddr to listen on (repeatable). Default: "
+             "/ip4/0.0.0.0/tcp/<port>"
+    )
+    parser.add_argument(
+        "--announce-addr",
+        action="append",
+        default=[],
+        dest="announce_addrs",
+        metavar="MULTIADDR",
+        help="Multiaddr to advertise verbatim (repeatable). Overrides "
+             "--announce-host. Must be dialable; wildcard hosts are rejected."
     )
     
     parser.add_argument(
@@ -452,6 +473,8 @@ def main():
                 nickname=nickname,
                 port=args.port,
                 announce_host=args.announce_host,
+                listen_addrs=args.listen_addrs or None,
+                announce_addrs=args.announce_addrs or None,
                 connect_addrs=args.connect,
                 strict_signing=strict_signing,
                 seed=args.seed,
@@ -502,6 +525,8 @@ def main():
                 nickname=nickname,
                 port=args.port,
                 announce_host=args.announce_host,
+                listen_addrs=args.listen_addrs or None,
+                announce_addrs=args.announce_addrs or None,
                 connect_addrs=args.connect,
                 strict_signing=strict_signing,
                 seed=args.seed,
@@ -548,6 +573,8 @@ def main():
                 nickname=nickname,
                 port=args.port,
                 announce_host=args.announce_host,
+                listen_addrs=args.listen_addrs or None,
+                announce_addrs=args.announce_addrs or None,
                 connect_addrs=args.connect,
                 strict_signing=strict_signing,
                 seed=args.seed,
