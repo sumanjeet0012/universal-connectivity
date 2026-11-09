@@ -25,18 +25,12 @@ py-peer = "main:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# The project uses a flat layout: runnable modules live at the repository root
-# next to the ``api``, ``app``, and ``llm`` packages. ``only-include`` keeps the
-# large React workspace, local data, and caches out of the wheel.
+# Only the entry point and Python packages are shipped; application modules
+# live in ``core`` so the repository root stays limited to project files.
 [tool.hatch.build.targets.wheel]
 only-include = [
     "main.py",
-    "headless.py",
-    "chatroom.py",
-    "tornado_server.py",
-    "ui.py",
-    "rag_handler.py",
-    "healthcheck.py",
+    "core",
     "api",
     "app",
     "llm",
@@ -48,12 +42,7 @@ only-include = [
 [tool.hatch.build.targets.sdist]
 only-include = [
     "main.py",
-    "headless.py",
-    "chatroom.py",
-    "tornado_server.py",
-    "ui.py",
-    "rag_handler.py",
-    "healthcheck.py",
+    "core",
     "api",
     "app",
     "llm",

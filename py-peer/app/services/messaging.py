@@ -14,7 +14,7 @@ from queue import Empty, Full
 
 import trio
 
-from chatroom import ChatMessage, ChatRoom
+from core.chatroom import ChatMessage, ChatRoom
 
 from ..constants import FILE_MESSAGE_PREFIX
 from ..errors import NotReadyError, OperationError, ValidationError

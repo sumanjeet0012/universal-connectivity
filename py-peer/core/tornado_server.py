@@ -10,7 +10,7 @@ Usage
 -----
 Instantiate TornadoServer and call start():
 
-    from tornado_server import TornadoServer
+    from core.tornado_server import TornadoServer
     server = TornadoServer(headless_service, port=8765)
     server.start()          # blocks — runs Tornado IOLoop
 """
@@ -38,7 +38,7 @@ from api.service   import (ServiceStatusHandler, ServiceConfigHandler,
                            ServiceStopHandler, ServiceBootstrapHandler)
 from api.websocket import (MessageStreamHandler, SystemStreamHandler,
                            PeerUpdateHandler, MeshUpdateHandler)
-from rag_handler import AskHandler, load_vectorstore
+from core.rag_handler import AskHandler, load_vectorstore
 
 logger = logging.getLogger("tornado_server")
 

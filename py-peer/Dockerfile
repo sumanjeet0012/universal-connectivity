@@ -64,11 +64,11 @@ WORKDIR /app
 # Runtime environment and application code. The React frontend is a separate
 # project and is deliberately not included; it talks to this container's API.
 COPY --from=builder --chown=uc:uc /app/.venv /app/.venv
-COPY --chown=uc:uc main.py headless.py chatroom.py tornado_server.py rag_handler.py ./
+COPY --chown=uc:uc main.py ./
+COPY --chown=uc:uc core ./core
 COPY --chown=uc:uc app ./app
 COPY --chown=uc:uc api ./api
 COPY --chown=uc:uc llm ./llm
-COPY --chown=uc:uc healthcheck.py ./
 
 # Durable application state lives only here. A named volume inherits this
 # ownership on first use; a bind mount must be chowned by the operator.
@@ -86,7 +86,7 @@ VOLUME ["/data"]
 # The check parses /api/v1/service/status and requires ready + running, so it
 # does not report healthy before the libp2p host is actually up.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD ["python", "/app/healthcheck.py"]
+    CMD ["python", "/app/core/healthcheck.py"]
 
 ENTRYPOINT ["python", "main.py"]
 

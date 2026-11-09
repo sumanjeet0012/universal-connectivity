@@ -8,7 +8,7 @@ GET    /api/v1/topics/{topic}/peers - peers in GossipSub mesh for topic
 """
 
 from .base import BaseHandler, parse_string_field
-from chatroom import MAX_TOPIC_NAME_LENGTH
+from core.chatroom import MAX_TOPIC_NAME_LENGTH
 
 
 def _sanitize_last_message(info):

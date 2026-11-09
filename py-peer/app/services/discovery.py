@@ -14,7 +14,7 @@ from queue import Empty, Full
 
 import trio
 
-from chatroom import MAX_TOPIC_NAME_LENGTH, MAX_TOPICS, PUBSUB_DISCOVERY_TOPIC
+from core.chatroom import MAX_TOPIC_NAME_LENGTH, MAX_TOPICS, PUBSUB_DISCOVERY_TOPIC
 
 from ..constants import BOOTSTRAP_PEERS
 from ..errors import (

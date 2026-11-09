@@ -41,8 +41,8 @@ class ApplicationRuntime:
         self.paths: DataPaths | None = None
 
         if service is None:
-            from chatroom import configure_system_log
-            from headless import HeadlessService
+            from core.chatroom import configure_system_log
+            from core.headless import HeadlessService
 
             # Resolve and prove the data directory before anything is written:
             # a bad path fails startup with one actionable error instead of a

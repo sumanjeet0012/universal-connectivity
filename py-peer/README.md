@@ -142,13 +142,15 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 ### Components
 
 - **main.py** - Application entry point and argument parsing
-- **ui.py** - Textual-based terminal user interface
-- **headless.py** - Background engine managing libp2p operations (the runtime's transport layer)
+- **core/** - Peer engine and interface adapters
+  - **headless.py** - Background engine managing libp2p operations (the runtime's transport layer)
+  - **chatroom.py** - Chat room logic, topic management, and message handling
+  - **ui.py** - Textual-based terminal user interface
+  - **tornado_server.py** - Tornado REST + WebSocket server bootstrap and route wiring
+  - **rag_handler.py** - Retrieval-augmented QA endpoint (`/api/v1/ask`)
+  - **healthcheck.py** - Container readiness probe
 - **app/** - Framework-independent `ApplicationRuntime` and services (peer, connection, messaging, discovery, identity, files, storage)
-- **chatroom.py** - Chat room logic, topic management, and message handling
-- **tornado_server.py** - Tornado REST + WebSocket server bootstrap and route wiring
 - **api/** - Versioned API handlers (node, peers, topics, messages, files, dht, pubsub, identity, service, websocket)
-- **rag_handler.py** - Retrieval-augmented QA endpoint (`/api/v1/ask`)
 - **React web frontend** - separate `py-peer-frontend` project (sibling checkout) consuming the API
 
 ### Message Flow
@@ -411,7 +413,7 @@ proxy.
 
 ### Health, shutdown, and logs
 
-The built-in health check runs `healthcheck.py`, which parses
+The built-in health check runs `core/healthcheck.py`, which parses
 `GET /api/v1/service/status` and requires `ready=true`, `running=true`, and
 `failed=false`. A plain HTTP 200 is not enough: the API can answer before the
 libp2p host is ready.
@@ -649,7 +651,7 @@ There is no configuration file. Values resolve in this order:
 
 The `UC_*` variables in `compose.yaml` are **Compose substitutions** used to
 build the container command and port mappings; the peer runtime only reads
-`UC_DATA_DIR` from the environment (`healthcheck.py` reads
+`UC_DATA_DIR` from the environment (`core/healthcheck.py` reads
 `UC_HEALTHCHECK_URL`, and the optional RAG client reads `GROQ_API_KEY`). Keep
 Compose values and any explicit CLI flags consistent, because a CLI flag inside
 `command:` wins.
@@ -773,12 +775,13 @@ the peer never starts half-configured.
 ```
 py-peer/
 ├── main.py              # Entry point & argument parsing
-├── ui.py                # Textual TUI implementation
-├── headless.py          # Background service & state management
-├── chatroom.py          # Chat room logic & topic handling
-├── tornado_server.py    # REST + WebSocket server
-├── rag_handler.py       # RAG assistant endpoint
-├── healthcheck.py       # Container readiness probe
+├── core/                # Peer engine and interface adapters
+│   ├── headless.py      # libp2p transport & lifecycle
+│   ├── chatroom.py      # Chat room logic & topic handling
+│   ├── ui.py            # Textual TUI implementation
+│   ├── tornado_server.py# REST + WebSocket server
+│   ├── rag_handler.py   # RAG assistant endpoint
+│   └── healthcheck.py   # Container readiness probe
 ├── Dockerfile           # Multi-stage runtime image
 ├── compose.yaml         # Compose service, volume, health check
 ├── .dockerignore        # Build-context exclusions
@@ -794,23 +797,22 @@ of this tree.
 
 ### Key Classes
 
-**headless.py:**
-- `HeadlessService` - Background libp2p service
-- Manages queues, message storage, peer connections
-- Per-topic message tracking with read/unread status
+**core/headless.py:**
+- `HeadlessService` - libp2p transport and process lifecycle
+- Delegates application work to `app/services` via `ServiceBundle`
 
-**chatroom.py:**
+**core/chatroom.py:**
 - `ChatRoom` - Core libp2p chat functionality
 - Dynamic topic subscription
 - Unified message handler for all topics
 - Message validation & signing
 
-**tornado_server.py + api/**
+**core/tornado_server.py + api/**
 - REST endpoints for node, peers, topics, messages, files, DHT, pubsub, identity, service
 - WebSocket streams for messages, system events, peer updates, mesh updates
 - Shared JSON response envelope + readiness guards
 
-**rag_handler.py:**
+**core/rag_handler.py:**
 - `POST /api/v1/ask` retrieval-augmented question answering
 - Loads Chroma vector store at startup
 - Uses Groq LLM backend for grounded answers with source attribution

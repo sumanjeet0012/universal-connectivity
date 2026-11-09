@@ -18,7 +18,7 @@ import threading
 from dotenv import load_dotenv
 load_dotenv()  # loads .env from cwd (py-peer/)
 
-from headless import HeadlessService
+from core.headless import HeadlessService
 from app import ApplicationError, ApplicationRuntime, RuntimeConfig
 
 def build_runtime(args) -> ApplicationRuntime:
@@ -474,7 +474,7 @@ def main():
     
     # Print routes and exit early if requested
     if getattr(args, 'api_routes', False):
-        from tornado_server import _print_routes
+        from core.tornado_server import _print_routes
         _print_routes(getattr(args, 'api_port', 8765))
         sys.exit(0)
 
@@ -492,7 +492,7 @@ def main():
             logger.info(f"✅ HeadlessService ready — launching Tornado on {args.api_host}:{args.api_port}")
 
             # Start Tornado in the main thread (blocks here)
-            from tornado_server import TornadoServer, _print_routes
+            from core.tornado_server import TornadoServer, _print_routes
             _print_routes(args.api_port)
             server = TornadoServer(runtime, port=args.api_port, host=args.api_host)
             previous_handlers = install_shutdown_signal_handlers(
@@ -521,7 +521,7 @@ def main():
 
             # Imported lazily: headless, CLI, and API modes must not require a
             # TUI framework to be importable.
-            from ui import ChatUI
+            from core.ui import ChatUI
 
             # Special handling for UI mode
             logger.info("Starting in UI mode...")
