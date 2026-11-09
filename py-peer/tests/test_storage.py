@@ -244,6 +244,106 @@ class SqliteStoreTests(unittest.TestCase):
         self.store.close()  # idempotent
 
 
+class StorageRecoveryTests(unittest.TestCase):
+    """Backup/restore and safe failure for damaged databases.
+
+    The peer is expected to stop cleanly before an operator copies the file, so
+    these tests always close the connection first. SQLite checkpoints WAL on the
+    last clean close, which is why the main ``history.db`` is a sufficient
+    backup unit for a stopped peer.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        self.path = os.path.join(self.directory, "history.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def _seed(self, texts):
+        store = SqliteStore(self.path)
+        try:
+            for index, text in enumerate(texts):
+                store.messages.append(_message(text, timestamp=float(index)))
+        finally:
+            store.close()
+
+    def _messages(self, path=None):
+        store = SqliteStore(path or self.path)
+        try:
+            page, total = store.page("t")
+            return total, [message["message"] for message in page]
+        finally:
+            store.close()
+
+    def test_backup_and_restore_of_a_stopped_peer(self):
+        self._seed(["one", "two"])
+
+        backup = os.path.join(self.directory, "backup.db")
+        shutil.copy2(self.path, backup)
+
+        # New data written after the backup must disappear on restore.
+        store = SqliteStore(self.path)
+        try:
+            store.messages.append(_message("three", timestamp=2.0))
+        finally:
+            store.close()
+        self.assertEqual(self._messages(), (3, ["one", "two", "three"]))
+
+        shutil.copy2(backup, self.path)
+        self.assertEqual(self._messages(), (2, ["one", "two"]))
+
+    def test_sqlite_online_backup_is_restorable(self):
+        self._seed(["alpha", "beta"])
+
+        backup = os.path.join(self.directory, "online-backup.db")
+        source = SqliteStore(self.path)
+        try:
+            target = sqlite3.connect(backup)
+            try:
+                source._connection.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+
+        self.assertEqual(self._messages(backup), (2, ["alpha", "beta"]))
+
+    def test_corrupt_database_fails_without_overwriting_the_file(self):
+        payload = b"this is not a sqlite database\x00\x01\x02"
+        with open(self.path, "wb") as handle:
+            handle.write(payload)
+
+        with self.assertRaises(StorageError) as raised:
+            SqliteStore(self.path)
+        self.assertIn("migration failed", str(raised.exception).lower())
+
+        with open(self.path, "rb") as handle:
+            self.assertEqual(handle.read(), payload)
+
+    def test_unopenable_database_path_fails_with_an_actionable_error(self):
+        directory_path = os.path.join(self.directory, "database-is-a-directory")
+        os.makedirs(directory_path)
+
+        with self.assertRaises(StorageError) as raised:
+            SqliteStore(directory_path)
+        self.assertIn("Could not open", raised.exception.message)
+        self.assertTrue(os.path.isdir(directory_path))
+
+    def test_reopening_does_not_reapply_migrations_or_lose_data(self):
+        self._seed(["kept"])
+
+        for _ in range(3):
+            store = SqliteStore(self.path)
+            try:
+                self.assertEqual(store.schema_version, SCHEMA_VERSION)
+                page, total = store.page("t")
+                self.assertEqual(total, 1)
+                self.assertEqual(page[0]["message"], "kept")
+            finally:
+                store.close()
+
+
 class OpenStoreTests(unittest.TestCase):
     def test_no_path_returns_the_in_memory_store(self):
         store = open_store(None)

@@ -1,12 +1,16 @@
 """Tests for the shared runtime, event bus, and single-instance wiring."""
 
+import socket
+import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import trio
 
-from app import ApplicationRuntime
+import headless as headless_module
+from app import ApplicationRuntime, DataDirectoryError, RuntimeConfig
 from app.events import Event, EventBus, EventType
 from api.base import as_runtime
 
@@ -134,6 +138,179 @@ class RuntimeTests(unittest.TestCase):
         second = as_runtime(service)
         self.assertIs(first, second)
         self.assertIs(first.service, service)
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+class RealRuntimeLifecycleTests(unittest.TestCase):
+    """End-to-end runtime lifecycle with a real libp2p host (no bootstrap)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._previous_bootstrap = headless_module.BOOTSTRAP_PEERS
+        headless_module.BOOTSTRAP_PEERS = []
+
+    def tearDown(self):
+        headless_module.BOOTSTRAP_PEERS = self._previous_bootstrap
+        self._tmp.cleanup()
+
+    def _runtime(self, port: int) -> ApplicationRuntime:
+        return ApplicationRuntime(
+            RuntimeConfig(
+                nickname="lifecycle",
+                port=port,
+                data_dir=self._tmp.name,
+                announce_host="127.0.0.1",
+                connect_addrs=[],
+            )
+        )
+
+    def _assert_port_released(self, port: int):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", port))
+
+    def test_repeated_start_stop_cycles_release_listeners_threads_and_identity(self):
+        baseline_threads = {
+            thread.ident for thread in threading.enumerate() if thread.is_alive()
+        }
+        peer_ids = set()
+
+        for _ in range(3):
+            port = _free_port()
+            runtime = self._runtime(port)
+            runtime.start_in_thread(timeout=30)
+            try:
+                self.assertTrue(runtime.ready)
+                self.assertTrue(runtime.running)
+                self.assertIsNotNone(runtime.service.host)
+                # Every in-process adapter resolves to the same engine/service.
+                self.assertIs(runtime.messaging.engine, runtime.service)
+                self.assertIs(runtime.storage.engine, runtime.service)
+                self.assertIs(runtime.peer.engine, runtime.service)
+
+                status = runtime.status()
+                self.assertTrue(status.ready)
+                self.assertTrue(status.running)
+                self.assertFalse(status.failed)
+                self.assertTrue(
+                    any(f"/tcp/{port}" in addr for addr in status.listen_addrs),
+                    status.listen_addrs,
+                )
+                peer_ids.add(status.peer_id)
+            finally:
+                runtime.request_stop()
+                self.assertTrue(runtime.join(20), "runtime thread did not stop")
+                runtime.close()
+
+            self._assert_port_released(port)
+
+        # Same data directory: one persisted identity across all three cycles.
+        self.assertEqual(len(peer_ids), 1, peer_ids)
+        # No runtime threads or other thread-shaped leftovers accumulate.
+        remaining = {
+            thread.ident
+            for thread in threading.enumerate()
+            if thread.is_alive() and thread.ident not in baseline_threads
+        }
+        leaked = [
+            thread.name
+            for thread in threading.enumerate()
+            if thread.is_alive() and thread.ident in remaining
+        ]
+        self.assertEqual(leaked, [])
+
+    def test_exactly_one_host_is_created_per_start(self):
+        created = []
+        real_new_host = headless_module.new_host
+
+        def counting_new_host(*args, **kwargs):
+            created.append(1)
+            return real_new_host(*args, **kwargs)
+
+        runtime = self._runtime(_free_port())
+        with patch.object(headless_module, "new_host", counting_new_host):
+            runtime.start_in_thread(timeout=30)
+            try:
+                self.assertEqual(len(created), 1)
+            finally:
+                runtime.request_stop()
+                self.assertTrue(runtime.join(20))
+
+    def test_identity_and_history_survive_a_real_restart(self):
+        topic = "universal-connectivity"
+
+        first = self._runtime(_free_port())
+        first.start_in_thread(timeout=30)
+        try:
+            peer_id = first.status().peer_id
+            self.assertTrue(
+                first.store.append(
+                    {
+                        "message": "persisted through the runtime",
+                        "topic": topic,
+                        "sender_id": peer_id,
+                        "sender_nick": "lifecycle",
+                        "timestamp": time.time(),
+                    }
+                )
+            )
+        finally:
+            first.request_stop()
+            self.assertTrue(first.join(20))
+
+        second = self._runtime(_free_port())
+        second.start_in_thread(timeout=30)
+        try:
+            self.assertEqual(second.status().peer_id, peer_id)
+            page = second.storage.history(topic, limit=10)
+            self.assertEqual(page["total"], 1)
+            self.assertEqual(
+                page["messages"][0]["message"], "persisted through the runtime"
+            )
+        finally:
+            second.request_stop()
+            self.assertTrue(second.join(20))
+
+    def test_invalid_listen_transport_fails_startup_and_cleans_up(self):
+        runtime = ApplicationRuntime(
+            RuntimeConfig(
+                nickname="bad-listen",
+                port=_free_port(),
+                data_dir=self._tmp.name,
+                announce_host="127.0.0.1",
+                listen_addrs=["/ip4/127.0.0.1/udp/4001"],
+            )
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "failed to start"):
+            runtime.start_in_thread(timeout=20)
+
+        self.assertTrue(runtime.failed)
+        self.assertTrue(runtime.join(10))
+        self.assertTrue(runtime.service._shutdown_done)
+
+    def test_unwritable_data_directory_is_rejected_before_start(self):
+        import os
+        import stat
+
+        if os.geteuid() == 0:  # pragma: no cover - root bypasses permissions
+            self.skipTest("running as root; permission bits are not enforced")
+        locked = os.path.join(self._tmp.name, "locked")
+        os.makedirs(locked)
+        os.chmod(locked, stat.S_IRUSR | stat.S_IXUSR)
+        try:
+            with self.assertRaises(DataDirectoryError) as raised:
+                ApplicationRuntime(
+                    RuntimeConfig(nickname="locked", data_dir=locked)
+                )
+            self.assertIn("not writable", str(raised.exception))
+        finally:
+            os.chmod(locked, stat.S_IRWXU)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "textual>=0.47.0",
-    "libp2p>=0.8.1,<0.9",
+    "libp2p @ git+https://github.com/sumanjeet0012/py-libp2p.git@fbf4ff94d7201edfa90992574c4879738f2dab96",
     "trio>=0.22.0",
     "base58",
     "protobuf>=6.32.1,<7",
@@ -25,11 +25,49 @@ py-peer = "main:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# The project uses a flat layout: runnable modules live at the repository root
+# next to the ``api``, ``app``, and ``llm`` packages. ``only-include`` keeps the
+# large React workspace, tests, local data, and caches out of the wheel.
 [tool.hatch.build.targets.wheel]
-packages = ["."]
+only-include = [
+    "main.py",
+    "headless.py",
+    "chatroom.py",
+    "tornado_server.py",
+    "ui.py",
+    "rag_handler.py",
+    "healthcheck.py",
+    "api",
+    "app",
+    "llm",
+]
+
+# The source distribution carries everything needed to review, test, and build
+# the project, but never frontend dependencies or local runtime state.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "main.py",
+    "headless.py",
+    "chatroom.py",
+    "tornado_server.py",
+    "ui.py",
+    "rag_handler.py",
+    "healthcheck.py",
+    "api",
+    "app",
+    "llm",
+    "tests",
+    "docs",
+    "assets",
+    "Dockerfile",
+    "compose.yaml",
+    ".dockerignore",
+    "README.md",
+    "API_REFERENCE.md",
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true
-
-[tool.uv.sources]
-libp2p = { git = "https://github.com/sumanjeet0012/py-libp2p.git", branch = "fix/peerstore-local-identity" }

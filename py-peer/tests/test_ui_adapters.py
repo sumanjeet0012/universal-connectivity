@@ -1,9 +1,11 @@
 """Adapter tests: Textual UI and simple CLI consume the runtime event bus."""
 
+import asyncio
 import io
 import threading
 import unittest
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 
 from app import ApplicationRuntime
 from app.events import Event, EventType
@@ -27,6 +29,7 @@ class _ReadyService:
         self.transport_addrs = ["/ip4/127.0.0.1/tcp/41234"]
         self.full_multiaddrs = ["/ip4/127.0.0.1/tcp/41234/p2p/peer-fake"]
         self.connect_addrs = []
+        self.sent = []
 
     async def start(self):
         self.ready = True
@@ -34,6 +37,10 @@ class _ReadyService:
 
     def request_stop(self):
         self.stop_event.set()
+
+    def send_message(self, text):
+        self.sent.append(text)
+        return True
 
     def get_connection_info(self):
         return {
@@ -116,6 +123,23 @@ class TextualAdapterTests(unittest.TestCase):
         self.ui._drain_events()
         self.assertTrue(any("Peer connected" in line for line in self.system_log.lines))
         self.assertTrue(any("Connected: 0" in line for line in self.peers_log.lines))
+
+    def test_submitted_input_goes_through_the_messaging_service(self):
+        class _Input:
+            cleared = False
+
+            def clear(self):
+                self.cleared = True
+
+        message_input = _Input()
+        self.ui.message_input = message_input
+
+        asyncio.run(
+            self.ui.on_input_submitted(SimpleNamespace(value="  hello from ui  "))
+        )
+
+        self.assertTrue(message_input.cleared)
+        self.assertEqual(self.runtime.service.sent, ["hello from ui"])
 
 
 class SimpleCliAdapterTests(unittest.TestCase):

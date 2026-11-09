@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from ..errors import NotReadyError, OperationError, ValidationError
 
+# One chat message is a bounded UI payload, not a file transfer. Files use the
+# separate upload/share endpoints (25 MB cap). Keeping this limit in the
+# service means direct, HTTP, and UI adapters all reject the same input.
+MAX_MESSAGE_LENGTH = 4096
+
 
 class MessagingService:
     """Publish chat messages through the engine's topic protocol."""
@@ -24,7 +29,12 @@ class MessagingService:
     def validate_message(message: str) -> str:
         if not isinstance(message, str) or not message.strip():
             raise ValidationError("'message' field is required.")
-        return message.strip()
+        text = message.strip()
+        if len(text) > MAX_MESSAGE_LENGTH:
+            raise ValidationError(
+                f"'message' must be at most {MAX_MESSAGE_LENGTH} characters."
+            )
+        return text
 
     def send(self, message: str) -> None:
         """Queue a message for the node's default chat topic."""

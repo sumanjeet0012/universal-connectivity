@@ -418,7 +418,7 @@ curl -X POST http://localhost:8765/api/v1/messages \
 **Body:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `message` | string | ✅ | The message text to publish |
+| `message` | string | ✅ | The message text to publish (after trimming, at most 4096 characters) |
 
 **Response `202`:**
 ```json
@@ -509,7 +509,7 @@ curl -X POST http://localhost:8765/api/v1/messages/universal-connectivity \
 **Body:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `message` | string | ✅ | The message text |
+| `message` | string | ✅ | The message text (after trimming, at most 4096 characters) |
 
 **Response `202`:**
 ```json
@@ -524,7 +524,8 @@ curl -X POST http://localhost:8765/api/v1/messages/universal-connectivity \
 }
 ```
 
-**Error `400`** — topic not subscribed (subscribe first via `POST /api/v1/topics`).
+**Error `400`** — blank/oversized message, or topic not subscribed (subscribe
+first via `POST /api/v1/topics`).
 
 ---
 

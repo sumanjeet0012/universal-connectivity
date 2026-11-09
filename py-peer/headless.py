@@ -1945,6 +1945,18 @@ class HeadlessService:
             except Exception:
                 logger.exception("Error stopping ChatRoom")
 
+        # libp2p's Pubsub allocates a ``LastSeenCache`` whose daemon cleanup
+        # thread is not joined by the service context manager. Leaving it alive
+        # leaks one thread per start/stop cycle in long-lived embedders.
+        pubsub = getattr(self, "pubsub", None)
+        seen_messages = getattr(pubsub, "seen_messages", None)
+        stop_cache = getattr(seen_messages, "stop", None)
+        if stop_cache is not None:
+            try:
+                stop_cache()
+            except Exception:
+                logger.exception("Error stopping the pubsub seen-message cache")
+
         # Stop bitswap client
         if self.bitswap_client:
             try:

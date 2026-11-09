@@ -1,6 +1,6 @@
-# Universal Connectivity py-peer — Architecture Audit (Phases 0–7)
+# Universal Connectivity py-peer — Architecture Audit (Phases 0–8)
 
-**Status:** Phase 0–7 deliverables
+**Status:** Phase 0–8 deliverables
 **Audit date:** 2026-11-08
 **Repository:** `universal-connectivity` (`py-peer` is the subject of this audit)
 **Baseline revision:** `dcfbf07` plus the current uncommitted working tree; Phase 1
@@ -1054,12 +1054,14 @@ readiness-based health check, Compose service with only TCP 4001/8765, graceful
 SIGTERM, persistence across recreation, and documented address/network
 caveats.
 
-### Phase 8 — Validation/release
+### Phase 8 — Validation/release (done — see §22)
 
-- Clean install from wheel/sdist, console script outside repo.
-- Full transport/address matrix, persistence, Docker, shutdown tests.
-- Fix packaging (`packages`, exclude frontend/tests/logs) and pin the tested
-  libp2p source reproducibly.
+Delivered: explicit wheel/sdist contents, a pinned libp2p commit, a clean-venv
+console-script install and runtime smoke, direct-vs-HTTP-vs-Textual adapter
+equivalence tests, repeated real start/stop cycles, a pubsub cleanup-thread leak
+fix, identity/history restart tests, storage backup/restore/corruption tests,
+two-container Docker connectivity and persistence, and platform/limits/security
+documentation.
 
 ---
 
@@ -2034,3 +2036,237 @@ docker compose stop
   is not an offline build.
 - [ ] The React frontend is not served by this image; it remains a separate
   deployment.
+
+## 22. Phase 8 — Integration, recovery, and release validation (implemented)
+
+**Status:** implemented and verified, 2026-11-09.
+**Baseline:** `195a648` (Phase 7).
+**Scope:** whole-system validation: runtime lifecycle, adapter equivalence,
+storage recovery, Docker connectivity, packaging, platforms, configuration, and
+security limits.
+
+### 22.1 Packaging and clean install
+
+The previous hatch configuration (`[tool.hatch.build.targets.wheel] packages =
+["."]`) shipped the entire working tree. `uv build` produced a ~35 MB wheel and
+~24 MB sdist; the sdist contained 13,572 `node_modules` entries.
+
+Now both targets use explicit `only-include` lists:
+
+| Artifact | Before | After |
+|---|---|---|
+| Wheel | ~35 MB, frontend `node_modules` | 99 KB, 42 entries |
+| Sdist | ~24 MB, 13,572 `node_modules` entries | 336 KB |
+
+Wheel contents: `main.py`, `headless.py`, `chatroom.py`, `tornado_server.py`,
+`ui.py`, `rag_handler.py`, `healthcheck.py`, `api/`, `app/`, `llm/`, and the
+console-script metadata. The sdist adds `tests/`, `docs/`, `assets/`,
+`Dockerfile`, `compose.yaml`, `.dockerignore`, `README.md`,
+`API_REFERENCE.md`, `pyproject.toml`, `uv.lock`, and `.python-version`.
+Neither artifact contains the React workspace, local databases, logs, caches,
+or `.env` files.
+
+`libp2p` is declared as a direct reference pinned to the tested fork commit
+`fbf4ff94d7201edfa90992574c4879738f2dab96`, both in `pyproject.toml` and in
+`uv.lock`. A plain `pip install` of the wheel therefore resolves the same source
+instead of an unrelated PyPI release. This requires network access and `git`.
+`tests/test_packaging.py` parses `pyproject.toml` so the frontend cannot silently
+re-enter the wheel/sdist and the libp2p pin cannot regress to a moving branch.
+
+Verification:
+
+```text
+uv build
+  -> py_peer-0.1.0-py3-none-any.whl (99K)
+  -> py_peer-0.1.0.tar.gz (336K)
+  -> wheel is also rebuilt from the sdist
+
+python3.12 -m venv <temp>/venv
+<temp>/venv/bin/pip install py_peer-0.1.0-py3-none-any.whl
+  -> installed libp2p 0.8.1 from the pinned git commit
+  -> no Kivy package installed
+
+cd <outside-repo>
+<temp>/venv/bin/py-peer --help
+  -> usage and all options render
+<temp>/venv/bin/py-peer --api-routes
+  -> full route table renders
+```
+
+A full clean-venv runtime smoke also passed: the installed `py-peer` console
+script started headless with `--api`, served
+`GET /api/v1/service/status` (`state=ready`), accepted
+`POST /api/v1/messages`, returned the stored message from history, wrote
+identity/history/logs into the external data directory, and exited `0` on
+SIGTERM. No module was imported from the repository checkout.
+
+Clean installs resolve the newest allowed versions of ranged dependencies; the
+container build remains the reproducible, `uv.lock`-pinned environment. The
+`pipx` and `uv tool` wrappers were not exercised separately.
+
+### 22.2 Core runtime lifecycle and resource leaks
+
+`tests/test_runtime.py` now includes real-host tests (bootstrap peers disabled
+so the tests are offline and deterministic):
+
+- A patched `new_host` counter confirms exactly one host is constructed per
+  runtime start.
+- Three start/stop cycles on one data directory. Every cycle starts one
+  `HeadlessService` host, binds the requested port, exposes ready/running
+  services, returns the configured listener, and stops with the listener port
+  immediately rebindable.
+- The peer ID is identical across all cycles (persisted identity), and
+  `runtime.messaging.engine`, `runtime.storage.engine`, and
+  `runtime.peer.engine` are the same service object.
+- No runtime thread is left alive and no new thread remains after the cycles.
+- An unsupported UDP listen address fails startup, marks the runtime failed,
+  joins the thread, and runs exactly-once teardown.
+- An unwritable data directory fails at construction with the actionable
+  `DataDirectoryError`.
+- Partial startup failure cleanup and concurrent teardown remain covered by
+  `tests/test_runtime.py` and `tests/test_headless_lifecycle.py`.
+
+The leak test found a real defect: py-libp2p's `Pubsub` creates a
+`LastSeenCache` whose daemon cleanup thread is not joined when the pubsub
+service context exits. Each start/stop cycle leaked one `_background_cleanup`
+thread. `HeadlessService._shutdown_async()` now calls
+`pubsub.seen_messages.stop()` defensively (guarded by `getattr`, so a future
+library version without that cache is harmless). The repeated-cycle test then
+passed with zero leftover threads.
+
+### 22.3 Service adapter equivalence
+
+`tests/test_adapter_equivalence.py` drives representative operations through
+the direct service API and through the Tornado HTTP API against the same
+runtime, and compares domain outcomes:
+
+| Operation | Direct | HTTP | Assertion |
+|---|---|---|---|
+| Publish default message | `runtime.messaging.send` | `POST /api/v1/messages` | Both normalize and reach the engine in order |
+| Publish to topic | `send_to_topic` | `POST /api/v1/messages/{topic}` | Same engine calls |
+| Query history | `runtime.storage.history` | `GET /api/v1/messages/{topic}` | Response envelope is byte-for-byte equal |
+| Inspect status | `runtime.status()` | `GET /api/v1/service/status` | Shared fields equal |
+| Connect peer | `runtime.connections.connect` | `POST /api/v1/peers/connect` | Same acknowledgement and dial target |
+| Reject blank message | `ValidationError` | HTTP 400 | Same boundary |
+| Reject oversized message | `ValidationError` | HTTP 400 | Same boundary |
+| Reject invalid multiaddr | `ValidationError` | HTTP 400 | No dial queued |
+
+Handlers remain translations only; they do not duplicate validation or engine
+logic. `tests/test_ui_adapters.py` additionally submits a message through the
+Textual `on_input_submitted` path and verifies it reaches
+`runtime.messaging.send` with the same trimming as the other adapters.
+
+A service-level cap was added in Phase 8: chat messages are limited to 4096
+characters (`MAX_MESSAGE_LENGTH`). File uploads keep their separate 25 MB cap.
+This closes the previously unbounded chat-payload path for every adapter.
+
+### 22.4 Persistence, migration, backup, restore, and corruption
+
+New real-runtime test: start a peer with a fresh data directory, record its
+peer ID, persist a message through the runtime store, stop, start again on the
+same directory, and verify both the peer ID and the message history. This
+complements the existing store-level restart, dedupe, and retention tests.
+
+`tests/test_storage.py` now covers:
+
+- Backup while stopped by copying `history.db`, writing newer data, restoring
+  the copy, and verifying the newer data is gone and the backed-up rows return.
+- SQLite's online `.backup()` API producing a restorable database.
+- A corrupt file raising `StorageError` while leaving the original bytes
+  unchanged (no silent recreation or overwrite).
+- A database path that is a directory raising an actionable `StorageError`.
+- Reopening the same database three times without reapplying migrations or
+  losing data.
+
+The schema is currently v1. There is no earlier released schema to migrate
+from; the v0 → v1 creation path and idempotent reopen are tested, and newer
+schemas are still refused. Backup guidance assumes the peer is stopped so WAL
+is checkpointed; the online backup test documents the alternative for a running
+peer.
+
+### 22.5 Docker connectivity and recreation
+
+Phase 7 verified a single container's health, API, persistence, and SIGTERM.
+Phase 8 added the missing peer-connectivity case on a user-defined bridge
+network:
+
+```text
+docker network create --subnet 172.28.0.0/24 uc-phase8-net
+peer A: 172.28.0.11:4001, API 127.0.0.1:8781, data volume uc-a-data
+peer B: 172.28.0.12:4001, API 127.0.0.1:8782, data volume uc-b-data
+
+A advertised  /ip4/172.28.0.11/tcp/4001/p2p/12D3KooW...
+B dialed A via POST /api/v1/peers/connect
+  -> B peer_count = 1
+B POST /api/v1/messages {"message":"phase8 cross-container hello"}
+  -> A history total = 1
+  -> B history total = 1
+
+docker stop -t 15 uc-a uc-b
+  -> both exit 0
+docker start uc-a uc-b
+  -> both healthy, same two peer IDs, both histories still show the message
+```
+
+The containers were removed with their volumes and network after the test.
+This validates container-to-container dialling, GossipSub delivery, and volume
+persistence. It does **not** validate host-LAN dialling or public/NAT
+reachability; those remain explicit exceptions.
+
+### 22.6 Configuration, platforms, and operational limits
+
+`README.md` now documents:
+
+- Supported/tested platforms: macOS 14+ arm64 and Linux arm64 Debian bookworm
+  containers. Linux x86_64 and Windows are labelled expected-but-untested;
+  mobile is explicitly unsupported. TCP-only transport support is stated.
+- Precedence: CLI flag > `UC_DATA_DIR` / `UC_HEALTHCHECK_URL` > built-in
+  default. There is no config file. Compose `UC_*` values are Compose
+  substitutions, not application settings (except `UC_DATA_DIR`).
+- Bounds: 4096-character chat messages, 128-character topic names, 25 MB
+  uploads, 32 MB absolute HTTP body, 1000 messages retained per topic, 256-event
+  subscriber queues (drop-oldest), and bounded legacy queues (64–1024).
+- Security posture: unauthenticated wildcard-CORS API bound to loopback,
+  explicit opt-in for remote binding, no rate limiting, `0600` identity keys,
+  no secret/message logging, and untrusted pubsub/DHT/bootstrap input.
+- Backup/restore and corrupt/newer-schema upgrade guidance.
+
+### 22.7 Release acceptance criteria
+
+- [x] Clean installation works from the built wheel in a fresh venv.
+- [x] CLI entry points work outside the repository (`py-peer --help`,
+  `--api-routes`, and a real headless/API run).
+- [x] No undeclared dependency was needed for that install; the only
+  non-PyPI requirement is the declared git-pinned libp2p source.
+- [x] No Kivy installation is needed (no Kivy dependency or import remains).
+- [x] One peer host is shared by all in-process interfaces (runtime tests).
+- [x] TCP transport and the documented address matrix pass the Phase 1/7/8
+  tests; non-TCP transports are rejected explicitly.
+- [x] Identity and retained history survive a real runtime restart.
+- [x] Docker volume persistence works across restart, recreation, and Compose
+  down/up.
+- [x] Shutdown is clean (SIGTERM/SIGINT exit 0, threads joined, listeners
+  released).
+- [x] Documentation states the supported platforms and limitations.
+- [x] `python -m unittest discover -s tests` → 186 tests, OK.
+
+### 22.8 Explicit exceptions
+
+- [ ] No CI workflow exists. All verification was run locally on macOS arm64
+  and Docker Desktop (`linux/arm64`).
+- [ ] Linux x86_64, Windows, and multi-arch images were not exercised. Native
+  dependencies (`fastecdsa`, `coincurve`, `grpcio`) make platform claims
+  unverified without those runs.
+- [ ] No cross-machine LAN test was possible; two containers on one Docker
+  network are not a substitute for a second physical host.
+- [ ] Public/NAT reachability is unsupported: no relay, AutoNAT, UPnP, or
+  public-IP discovery. A router port forward and dialable `--announce-host` are
+  required.
+- [ ] The API remains unauthenticated, wildcard-CORS, and unrate-limited. It is
+  trusted-local only; remote use needs an authenticating proxy and firewall.
+- [ ] Only schema v1 exists, so there is no older released version migration to
+  validate. Backup/restore is an operator procedure, not an automated service.
+- [ ] Wheel installation requires network access and `git` for the pinned
+  libp2p fork; there is no offline wheel bundle.
+- [ ] `pipx` and `uv tool install` were not separately tested.
+- [ ] The React frontend is not part of the Python wheel or Docker image.

@@ -759,7 +759,7 @@ wheels = [
 [[package]]
 name = "libp2p"
 version = "0.8.1"
-source = { git = "https://github.com/sumanjeet0012/py-libp2p.git?branch=fix%2Fpeerstore-local-identity#fbf4ff94d7201edfa90992574c4879738f2dab96" }
+source = { git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=fbf4ff94d7201edfa90992574c4879738f2dab96#fbf4ff94d7201edfa90992574c4879738f2dab96" }
 dependencies = [
     { name = "aioquic" },
     { name = "anyio" },
@@ -1255,7 +1255,7 @@ requires-dist = [
     { name = "base58" },
     { name = "groq", specifier = ">=1.0.0" },
     { name = "janus", specifier = ">=1.0.0" },
-    { name = "libp2p", git = "https://github.com/sumanjeet0012/py-libp2p.git?branch=fix%2Fpeerstore-local-identity" },
+    { name = "libp2p", git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=fbf4ff94d7201edfa90992574c4879738f2dab96" },
     { name = "platformdirs", specifier = ">=4.0.0" },
     { name = "protobuf", specifier = ">=6.32.1,<7" },
     { name = "python-dotenv", specifier = ">=1.2.2" },

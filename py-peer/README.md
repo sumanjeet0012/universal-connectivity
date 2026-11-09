@@ -175,6 +175,23 @@ User Input → UI Thread → Queue → Async Thread (Trio)
 - For React frontend: **Node.js 18+** and npm
 - For RAG endpoint (`/api/v1/ask`): Groq API key + vector store build dependencies
 
+### Supported platforms
+
+Do not assume universal support just because the wheel is pure Python: libp2p
+and `fastecdsa` ship native or platform-specific dependencies.
+
+| Target | Status | Notes |
+|---|---|---|
+| macOS 14+ (arm64) | **Tested** | Full unit suite, real host lifecycle, wheel install, Docker Desktop host |
+| Linux arm64 (Debian bookworm, Python 3.12, container) | **Tested** | Headless runtime, health check, two-container connectivity, persistence |
+| Linux x86_64 | Expected, not tested in this repository | Same Python 3.12 requirements; verify native wheels before release |
+| Windows 11 | Expected, not tested in this repository | TCP only; no native test, no service installer |
+| Android/iOS | Not supported | The former Kivy mobile path was removed |
+
+Only **TCP** is enabled. QUIC, WebSocket, WebRTC, and WebTransport listen
+addresses are rejected at startup. IPv4 and IPv6 loopback are supported; LAN use
+requires `--announce-host` and an open firewall port.
+
 ## 🛠️ Installation
 
 ### Option 1: Using uv (Recommended)
@@ -222,6 +239,38 @@ source .venv/bin/activate  # Linux/macOS
 # Install the package
 pip install -e .
 ```
+
+### Option 3: Build and install a wheel
+
+`uv build` produces a small runtime wheel and a source distribution. The wheel
+contains the root runner modules plus `api/`, `app/`, and `llm/`; it excludes
+the React workspace, `node_modules`, tests, docs, Docker assets, local
+databases, and caches. The sdist additionally contains tests, docs, the Docker
+files, and `uv.lock`.
+
+```bash
+cd py-peer
+uv build                     # dist/py_peer-0.1.0-py3-none-any.whl + .tar.gz
+
+python -m venv /tmp/py-peer-venv
+/tmp/py-peer-venv/bin/pip install dist/py_peer-0.1.0-py3-none-any.whl
+
+# Run the installed console script from outside the repository
+cd /tmp
+/tmp/py-peer-venv/bin/py-peer --help
+/tmp/py-peer-venv/bin/py-peer --api-routes
+```
+
+The wheel pins the tested libp2p fork to one git commit
+(`fbf4ff94d7201edfa90992574c4879738f2dab96`), so a clean install needs network
+access and `git` to build that dependency. It does **not** install Kivy or any
+UI framework beyond Textual, and it never writes into the installation
+directory: identity, history, and logs go to the data directory described
+below. Upgrading the package leaves that directory untouched.
+
+`pipx install` and `uv tool install` work with the same wheel, but they were not
+separately exercised in this repository; the clean-venv install above is the
+verified path.
 
 ## 🐳 Docker Deployment
 
@@ -587,6 +636,60 @@ does **not** deliver messages to peers that were offline, and it is not a
 network-wide history. Back up with
 `sqlite3 <data-dir>/history.db ".backup 'backup.db'"` (or copy the file while
 the peer is stopped) and restore by replacing it while stopped.
+
+### Configuration Precedence and Limits
+
+There is no configuration file. Values resolve in this order:
+
+1. **CLI flag** (for example `--data-dir`, `--port`, `--api-host`, `--api-port`)
+2. **Environment variable** where one exists:
+   - `UC_DATA_DIR` — same as `--data-dir`
+   - `UC_HEALTHCHECK_URL` — used only by the container health probe
+3. **Built-in default**
+
+The `UC_*` variables in `compose.yaml` are **Compose substitutions** used to
+build the container command and port mappings; the peer runtime only reads
+`UC_DATA_DIR` from the environment (`healthcheck.py` reads
+`UC_HEALTHCHECK_URL`, and the optional RAG client reads `GROQ_API_KEY`). Keep
+Compose values and any explicit CLI flags consistent, because a CLI flag inside
+`command:` wins.
+
+| Setting | Default | Notes |
+|---|---|---|
+| Peer port | `4001` (`--port 0` is converted to `4001`) | Compose/Docker pass `4001` explicitly |
+| Listen addresses | `/ip4/0.0.0.0/tcp/<port>` | TCP only; unsupported transports fail startup |
+| Advertised host | `127.0.0.1` | Same-machine only; set a dialable address for LAN/Docker |
+| API port | `8765` | |
+| API host | `127.0.0.1` | Unauthenticated; `0.0.0.0` is explicit opt-in |
+| Data directory | platformdirs path | Overridden by `UC_DATA_DIR` or `--data-dir` |
+| History retention | 1000 messages/topic | Fixed in this build; hard maximum 100,000 |
+| Chat message size | 4096 characters | Enforced by the service for every adapter |
+| Topic name | 128 characters | Validated on subscription |
+| Upload size | 25 MB per file | Absolute HTTP body cap is 32 MB |
+| Event queue | 256 events/subscriber | Slow consumers drop the oldest event |
+| Legacy UI queues | 64–1024 items | Bounded; non-blocking command queues |
+
+Configuration is validated before the runtime reports ready: invalid ports,
+malformed or non-TCP listen addresses, wildcard announce addresses, and
+unwritable data directories fail startup with a clear error. If you need a
+configuration file or different retention, it is not implemented yet rather
+than silently ignored.
+
+### Security and Operational Assumptions
+
+- The API has no authentication or rate limiting. It is a trusted-local
+  interface; put an authenticating reverse proxy and firewall in front before
+  binding it to a non-loopback interface.
+- Identity keys are written with mode `0600`. Seed values, keys, and message
+  contents are not logged at normal verbosity.
+- Message payloads, pubsub traffic, DHT records, and bootstrap peer responses
+  are untrusted input. `--no-strict-signing` weakens pubsub authenticity and is
+  for development only.
+- History retention bounds disk growth per topic, but there is no global quota
+  or automatic retention change. A disk-full write is reported and does not
+  stop live delivery.
+- Corrupt or newer-schema databases fail startup without overwriting the file;
+  back up while stopped (or use `sqlite3 ... ".backup"`) before upgrading.
 
 ### Tornado API Configuration
 
