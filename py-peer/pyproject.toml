@@ -55,6 +55,7 @@ only-include = [
     "Dockerfile",
     "docker-compose.yml",
     "requirements-rag.txt",
+    "requirements-dev.txt",
     ".dockerignore",
     "README.md",
     "pyproject.toml",
@@ -64,3 +65,63 @@ only-include = [
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.mypy]
+python_version = "3.12"
+files = ["main.py", "core", "app", "api", "ui"]
+exclude = ["^llm/"]
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_subclassing_any = false
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+incremental = false
+strict_equality = true
+strict_optional = true
+warn_redundant_casts = true
+warn_return_any = false
+warn_unused_configs = true
+warn_unused_ignores = false
+show_error_codes = true
+pretty = true
+
+# libp2p ships ``py.typed``; these third-party packages do not.
+[[tool.mypy.overrides]]
+module = ["multiaddr.*", "trio_asyncio.*"]
+ignore_missing_imports = true
+
+# Pyrefly runs alongside mypy in py-libp2p. It checks the same application
+# modules; the optional RAG tree is excluded because its third-party packages
+# are not part of the base install.
+[tool.pyrefly]
+python_version = "3.12"
+project_includes = ["main.py", "core", "app", "api", "ui"]
+project_excludes = ["llm/**"]
+# These optional/third-party packages do not ship type information in all
+# installs, matching the mypy ``ignore_missing_imports`` policy above.
+replace_imports_with_any = [
+    "multiaddr",
+    "multiaddr.*",
+    "trio_asyncio",
+    "trio_asyncio.*",
+    "langchain_huggingface.*",
+    "langchain_chroma.*",
+    "langchain_community.*",
+    "langchain_text_splitters.*",
+]
+
+# Tornado dispatches ``get``/``post`` handlers with route arguments that are
+# not part of the base class's call signature, so its handlers cannot satisfy
+# Pyrefly's Liskov override check. Keep the check everywhere else.
+[[tool.pyrefly.sub_config]]
+matches = "api/**"
+[tool.pyrefly.sub_config.errors]
+bad-override = false
+
+[[tool.pyrefly.sub_config]]
+matches = "core/rag_handler.py"
+[tool.pyrefly.sub_config.errors]
+bad-override = false

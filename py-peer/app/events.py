@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 import janus
 from queue import Empty, Full
@@ -47,10 +47,10 @@ class Event:
     """Immutable application event."""
 
     type: EventType
-    data: dict = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
     timestamp: float = field(default_factory=time.time)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "event": self.type.value,
             "data": self.data,
@@ -67,7 +67,7 @@ class EventSubscription:
 
     def __init__(self, types: set[EventType] | None, maxsize: int):
         self.types = types
-        self.queue = janus.Queue(maxsize=maxsize)
+        self.queue: janus.Queue[Event] = janus.Queue(maxsize=maxsize)
         self.dropped = 0
         self._closed = False
 
@@ -112,12 +112,16 @@ class EventBus:
         maxsize: int | None = None,
     ) -> EventSubscription:
         """Register a subscriber, optionally filtering by event type."""
-        normalized = None
+        normalized: set[EventType] | None = None
         if types is not None:
-            normalized = {
-                item if isinstance(item, EventType) else EventType(item)
-                for item in types
-            }
+            normalized = set()
+            for item in types:
+                if isinstance(item, EventType):
+                    normalized.add(item)
+                else:
+                    # Pyrefly 0.17 infers enum constructors as ``str``; mypy
+                    # already narrows this to EventType.
+                    normalized.add(cast(EventType, EventType(item)))  # type: ignore[redundant-cast]
         subscription = EventSubscription(normalized, maxsize or self.maxsize)
         with self._lock:
             self._subscribers.add(subscription)

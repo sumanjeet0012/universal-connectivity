@@ -13,9 +13,11 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import tornado.web
 from groq import AsyncGroq
+from groq.types.chat import ChatCompletionUserMessageParam
 
 log = logging.getLogger("rag_handler")
 
@@ -37,7 +39,7 @@ def _get_groq_client() -> AsyncGroq:
     return _groq_client
 
 
-def load_vectorstore():
+def load_vectorstore() -> Any:
     """
     Load ChromaDB vector store with nomic-embed-text embeddings.
     Returns None (with a warning) if the directory doesn't exist or
@@ -74,7 +76,7 @@ def load_vectorstore():
         return None
 
 
-def _build_prompt(question: str, chunks: list) -> str:
+def _build_prompt(question: str, chunks: list[Any]) -> str:
     context = "\n\n---\n\n".join(
         f"[Source: {c.metadata.get('source', 'unknown')}]\n{c.page_content}"
         for c in chunks
@@ -98,20 +100,22 @@ class AskHandler(tornado.web.RequestHandler):
     Response: {"answer": "...", "sources": ["file1.py", "spec.md"]}
     """
 
-    def initialize(self, vectorstore):
+    vectorstore: Any
+
+    def initialize(self, vectorstore: Any) -> None:
         self.vectorstore = vectorstore
 
-    def set_default_headers(self):
+    def set_default_headers(self) -> None:
         self.set_header("Access-Control-Allow-Origin", "*")
         self.set_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.set_header("Access-Control-Allow-Headers", "Content-Type")
         self.set_header("Content-Type", "application/json")
 
-    async def options(self):
+    async def options(self) -> None:
         self.set_status(204)
         self.finish()
 
-    async def post(self):
+    async def post(self) -> None:
         if self.vectorstore is None:
             self.set_status(503)
             self.finish(json.dumps({
@@ -160,11 +164,15 @@ class AskHandler(tornado.web.RequestHandler):
 
         # Call Groq (llama-3.3-70b-versatile)
         try:
+            messages: list[ChatCompletionUserMessageParam] = [
+                ChatCompletionUserMessageParam(role="user", content=prompt)
+            ]
             completion = await _get_groq_client().chat.completions.create(
                 model=GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
             )
-            answer = completion.choices[0].message.content.strip()
+            content = completion.choices[0].message.content
+            answer = content.strip() if content else ""
         except Exception as exc:
             log.error("Groq error: %s", exc)
             self.set_status(502)

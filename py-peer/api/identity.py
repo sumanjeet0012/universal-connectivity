@@ -13,7 +13,7 @@ from .base import BaseHandler
 class IdentityCacheListHandler(BaseHandler):
     """GET /api/v1/identity/cache"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         cache = self.identity_service.cache()
@@ -23,7 +23,7 @@ class IdentityCacheListHandler(BaseHandler):
 class IdentityPeerHandler(BaseHandler):
     """GET /api/v1/identity/{peer_id}"""
 
-    def get(self, peer_id):
+    def get(self, peer_id: str) -> None:
         if not self.require_ready():
             return
         self.send_success(self.identity_service.get(peer_id))
@@ -32,7 +32,7 @@ class IdentityPeerHandler(BaseHandler):
 class IdentityPublicKeyHandler(BaseHandler):
     """GET /api/v1/identity/{peer_id}/pubkey"""
 
-    def get(self, peer_id):
+    def get(self, peer_id: str) -> None:
         if not self.require_ready():
             return
         pubkey_hex = self.identity_service.public_key_hex(peer_id)
@@ -42,7 +42,7 @@ class IdentityPublicKeyHandler(BaseHandler):
 class IdentityCacheDeleteHandler(BaseHandler):
     """DELETE /api/v1/identity/{peer_id}/cache"""
 
-    def delete(self, peer_id):
+    def delete(self, peer_id: str) -> None:
         if not self.require_ready():
             return
         self.identity_service.invalidate(peer_id)

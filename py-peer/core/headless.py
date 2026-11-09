@@ -6,11 +6,13 @@ process lifecycle. Application behaviour lives in ``app.services``; the engine
 receives one ServiceBundle from ``ApplicationRuntime`` and only calls into it.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import threading
 import traceback
-from typing import Any, Dict, List, Set
+from typing import Any, Callable, Dict, List, Set
 
 import janus
 import trio
@@ -26,6 +28,7 @@ from libp2p.identity.identify.identify import (
 )
 from libp2p.kad_dht.kad_dht import DHTMode, KadDHT
 from libp2p.network.config import ConnectionConfig
+from libp2p.peer.peerinfo import PeerInfo
 from libp2p.protocol_muxer.exceptions import MultiselectClientError
 from libp2p.pubsub.gossipsub import (
     PROTOCOL_ID,
@@ -71,7 +74,7 @@ __all__ = [
 ]
 
 
-def filter_compatible_peer_info(peer_info) -> bool:
+def filter_compatible_peer_info(peer_info: PeerInfo) -> bool:
     """Filter peer info to check if it has compatible addresses (TCP + IPv4)."""
     if not hasattr(peer_info, "addrs") or not peer_info.addrs:
         return False
@@ -90,18 +93,18 @@ class HeadlessService:
         self,
         nickname: str,
         port: int = 0,
-        connect_addrs: List[str] = None,
+        connect_addrs: List[str] | None = None,
         ui_mode: bool = False,
         strict_signing: bool = True,
-        seed: str = None,
-        topic: str = None,
+        seed: str | None = None,
+        topic: str | None = None,
         announce_host: str = "127.0.0.1",
-        listen_addrs: List[str] = None,
-        announce_addrs: List[str] = None,
-        message_store=None,
-        event_bus=None,
-        identity_path: str = None,
-        services=None,
+        listen_addrs: List[str] | None = None,
+        announce_addrs: List[str] | None = None,
+        message_store: Any = None,
+        event_bus: Any = None,
+        identity_path: str | None = None,
+        services: Any = None,
     ):
         self.nickname = nickname
         self.port = port if port != 0 else 4001
@@ -120,7 +123,7 @@ class HeadlessService:
         self.listen_addrs = list(listen_addrs) if listen_addrs else None
         self.announce_addrs = list(announce_addrs) if announce_addrs else None
         self.announce_host = announce_host
-        self.event_bus = event_bus  # optional app.events.EventBus; additive
+        self.event_bus: Any = event_bus  # optional app.events.EventBus; additive
         self.ui_mode = ui_mode
         self.strict_signing = strict_signing
         self.seed = seed or None
@@ -133,36 +136,36 @@ class HeadlessService:
         self.topic = topic
 
         # libp2p components (transport only)
-        self.host: IHost = None
-        self.pubsub = None
-        self.gossipsub = None
-        self.dht = None
-        self.chat_room = None
+        self.host: IHost | None = None
+        self.pubsub: Pubsub | None = None
+        self.gossipsub: GossipSub | None = None
+        self.dht: KadDHT | None = None
+        self.chat_room: Any = None
 
         # Bitswap components for file sharing
-        self.bitswap_client = None
-        self.merkle_dag = None
-        self.block_store = MemoryBlockStore()
+        self.bitswap_client: BitswapClient | None = None
+        self.merkle_dag: MerkleDag | None = None
+        self.block_store: MemoryBlockStore = MemoryBlockStore()
 
         # Service state
         self.running = False
         self.ready = False
-        self.full_multiaddr = None
-        self.full_multiaddrs = []
-        self.transport_addrs = []
+        self.full_multiaddr: str | None = None
+        self.full_multiaddrs: list[str] = []
+        self.transport_addrs: list[str] = []
 
         # Communication with UI (created in start(); services read them
         # dynamically, so constructing services earlier is safe).
-        self.message_queue = None
-        self.system_queue = None
-        self.outgoing_queue = None
-        self.topic_subscription_queue = None
-        self.peer_connection_queue = None
-        self.file_share_queue = None
-        self.file_download_queue = None
+        self.message_queue: janus.Queue[Any] | None = None
+        self.system_queue: janus.Queue[Any] | None = None
+        self.outgoing_queue: janus.Queue[Any] | None = None
+        self.topic_subscription_queue: janus.Queue[Any] | None = None
+        self.peer_connection_queue: janus.Queue[Any] | None = None
+        self.file_share_queue: janus.Queue[Any] | None = None
+        self.file_download_queue: janus.Queue[Any] | None = None
 
         # Storage and file destination are engine-owned configuration.
-        self.message_store = message_store
+        self.message_store: Any = message_store
         self.download_dir = DEFAULT_DOWNLOAD_DIR
         os.makedirs(self.download_dir, exist_ok=True)
 
@@ -171,7 +174,7 @@ class HeadlessService:
         self.ready_event = trio.Event()
         self.stop_event = threading.Event()
 
-        self.on_stopped = None
+        self.on_stopped: Callable[[], None] | None = None
         self.failed = False
 
         # Lifecycle ownership. start() may run at most once per instance, and
@@ -182,7 +185,7 @@ class HeadlessService:
 
         # Injected by ApplicationRuntime so the transport engine stays free of
         # application-layer imports.
-        self.services = services
+        self.services: Any = services
 
         if not ui_mode:
             logger.info(
@@ -193,9 +196,10 @@ class HeadlessService:
     # ------------------------------------------------------------------ #
     #  Lifecycle
     # ------------------------------------------------------------------ #
-    async def start(self):
+    async def start(self) -> None:
         """Start the headless service."""
-        if self.services is None:
+        services = self.services
+        if services is None:
             raise RuntimeError(
                 "HeadlessService requires an injected ServiceBundle; "
                 "construct it through ApplicationRuntime."
@@ -209,17 +213,17 @@ class HeadlessService:
 
         try:
             logger.debug("Creating message queues...")
-            self.message_queue = janus.Queue(maxsize=MAX_LEGACY_QUEUE)
-            self.system_queue = janus.Queue(maxsize=MAX_LEGACY_QUEUE)
-            self.outgoing_queue = janus.Queue(maxsize=MAX_OUTGOING_QUEUE)
-            self.topic_subscription_queue = janus.Queue(maxsize=MAX_REQUEST_QUEUE)
-            self.peer_connection_queue = janus.Queue(maxsize=MAX_REQUEST_QUEUE)
-            self.file_share_queue = janus.Queue(maxsize=MAX_FILE_QUEUE)
-            self.file_download_queue = janus.Queue(maxsize=MAX_FILE_QUEUE)
+            self.message_queue = janus.Queue[Any](maxsize=MAX_LEGACY_QUEUE)
+            self.system_queue = janus.Queue[Any](maxsize=MAX_LEGACY_QUEUE)
+            self.outgoing_queue = janus.Queue[Any](maxsize=MAX_OUTGOING_QUEUE)
+            self.topic_subscription_queue = janus.Queue[Any](maxsize=MAX_REQUEST_QUEUE)
+            self.peer_connection_queue = janus.Queue[Any](maxsize=MAX_REQUEST_QUEUE)
+            self.file_share_queue = janus.Queue[Any](maxsize=MAX_FILE_QUEUE)
+            self.file_download_queue = janus.Queue[Any](maxsize=MAX_FILE_QUEUE)
             logger.debug("Message queues created successfully")
 
             async with trio_asyncio.open_loop():
-                await self.services.notifications.system(
+                await services.notifications.system(
                     "Headless service starting..."
                 )
                 await self._run_service()
@@ -232,6 +236,7 @@ class HeadlessService:
         finally:
             # Perform teardown on the trio thread that owns the host, whatever
             # the exit path (stop requested, startup error, or cancellation).
+            # pyrefly: ignore
             with trio.CancelScope(shield=True):
                 await self._shutdown_async()
             self.ready = False
@@ -242,7 +247,7 @@ class HeadlessService:
                 except Exception:
                     logger.exception("Error in on_stopped callback")
 
-    async def _run_service(self):
+    async def _run_service(self) -> None:
         """Run the main service loop: build transport, then start services."""
         services = self.services
 
@@ -267,30 +272,32 @@ class HeadlessService:
 
         # Create libp2p host WITHOUT bootstrap nodes initially; bootstrap
         # dials happen after pubsub is running.
-        self.host = new_host(
+        host = new_host(
             key_pair=key_pair,
             connection_config=config,
             listen_addrs=listen_addrs,
             announce_addrs=explicit_announce or None,
             addrs_factory=addrs_factory,
         )
+        self.host = host
 
         logger.info(
             "📋 Registering identify protocol handler (raw protobuf format "
             "for go-libp2p compatibility)"
         )
         identify_handler = identify_handler_for(
-            self.host, use_varint_format=True
+            host, use_varint_format=True
         )
-        self.host.set_stream_handler(IDENTIFY_PROTOCOL_ID, identify_handler)
+        host.set_stream_handler(IDENTIFY_PROTOCOL_ID, identify_handler)
         logger.info(
             f"✅ Identify protocol handler registered for {IDENTIFY_PROTOCOL_ID}"
         )
 
-        self.dht = KadDHT(self.host, DHTMode.SERVER, enable_random_walk=True)
+        dht = KadDHT(host, DHTMode.SERVER, enable_random_walk=True)
+        self.dht = dht
         logger.info("✅ DHT created with random walk enabled")
 
-        logger.info(f"Host created with PeerID: {self.host.get_id()}")
+        logger.info(f"Host created with PeerID: {host.get_id()}")
         logger.info(
             "Configured listen address(es): "
             + ", ".join(str(addr) for addr in listen_addrs)
@@ -317,7 +324,7 @@ class HeadlessService:
         logger.info(f"  Protocol 1: {PROTOCOL_ID}")
         logger.info(f"  Protocol 2: {PROTOCOL_ID_V11}")
 
-        self.gossipsub = GossipSub(
+        gossipsub = GossipSub(
             protocols=PROTOCOL_ID_LIST,
             degree=3,
             degree_low=2,
@@ -327,39 +334,42 @@ class HeadlessService:
             heartbeat_initial_delay=2.0,
             heartbeat_interval=5,
         )
+        self.gossipsub = gossipsub
         logger.info("✅ GossipSub router created successfully")
 
         logger.info(
             f"🔐 Creating PubSub with strict_signing={self.strict_signing}"
         )
-        self.pubsub = Pubsub(
-            self.host, self.gossipsub, strict_signing=self.strict_signing
+        pubsub = Pubsub(
+            host, gossipsub, strict_signing=self.strict_signing
         )
+        self.pubsub = pubsub
         logger.info("✅ PubSub service created successfully")
 
-        self.bitswap_client = BitswapClient(self.host, self.block_store)
-        self.merkle_dag = MerkleDag(self.bitswap_client)
+        bitswap = BitswapClient(host, self.block_store)
+        self.bitswap_client = bitswap
+        self.merkle_dag = MerkleDag(bitswap)
         logger.info("✅ Bitswap client and MerkleDag created for file sharing")
 
-        async with self.host.run(listen_addrs=listen_addrs):
-            services.addresses.verify_listeners(self.host, listen_addrs)
-            services.addresses.refresh_advertised_addrs(self.host)
+        async with host.run(listen_addrs=listen_addrs):
+            services.addresses.verify_listeners(host, listen_addrs)
+            services.addresses.refresh_advertised_addrs(host)
             logger.info("📡 Initializing PubSub, GossipSub, and DHT services...")
             try:
-                async with background_trio_service(self.pubsub):
-                    async with background_trio_service(self.gossipsub):
-                        async with background_trio_service(self.dht):
+                async with background_trio_service(pubsub):
+                    async with background_trio_service(gossipsub):
+                        async with background_trio_service(dht):
                             logger.info(
                                 "✅ Pubsub, GossipSub, and DHT services started."
                             )
-                            await self.pubsub.wait_until_ready()
+                            await pubsub.wait_until_ready()
                             logger.info("✅ Pubsub ready and operational.")
                             logger.info(
                                 "✅ DHT service started with random walk enabled."
                             )
                             if BOOTSTRAP_PEERS:
                                 bootstrap = BootstrapDiscovery(
-                                    self.host.get_network(), BOOTSTRAP_PEERS
+                                    host.get_network(), BOOTSTRAP_PEERS
                                 )
                                 await bootstrap.start()
 
@@ -367,7 +377,7 @@ class HeadlessService:
                             # are subscribed when GossipSub negotiates.
                             await services.messaging.setup_chat_room()
 
-                            await self.bitswap_client.start()
+                            await bitswap.start()
                             logger.info(
                                 "✅ Bitswap client started for file sharing"
                             )
@@ -379,7 +389,7 @@ class HeadlessService:
                             logger.info("✅ Headless service is ready")
 
                             async with trio.open_nursery() as nursery:
-                                self.bitswap_client.set_nursery(nursery)
+                                bitswap.set_nursery(nursery)
                                 services.start_workers(nursery)
 
                                 await self._wait_for_stop()
@@ -392,14 +402,14 @@ class HeadlessService:
                 self.failed = True
                 raise
 
-    async def _wait_for_stop(self):
+    async def _wait_for_stop(self) -> None:
         """Poll the thread-safe stop signal without blocking the trio thread."""
         while not self.stop_event.is_set():
             await trio.sleep(0.1)
         logger.info("Stop signal received, shutting down...")
         self.running = False
 
-    def request_stop(self):
+    def request_stop(self) -> None:
         """Ask the service to stop. Safe to call from any thread.
 
         This only signals intent. The trio thread that owns the host performs
@@ -408,7 +418,7 @@ class HeadlessService:
         if self.stop_event is not None:
             self.stop_event.set()
 
-    async def _shutdown_async(self):
+    async def _shutdown_async(self) -> None:
         """Tear down resources owned by the trio loop. Runs at most once."""
         if self._shutdown_done:
             return
@@ -455,14 +465,14 @@ class HeadlessService:
 
         logger.info("Headless service stopped")
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Request shutdown (async for callers inside the trio loop)."""
         self.request_stop()
 
     # ------------------------------------------------------------------ #
     #  Delegates to application services
     # ------------------------------------------------------------------ #
-    async def monitor_peers(self):
+    async def monitor_peers(self) -> None:
         await self.services.peers.monitor_peers()
 
     def send_message(self, message: str) -> bool:
@@ -488,13 +498,13 @@ class HeadlessService:
     def get_shared_files(self) -> List[Dict[str, Any]]:
         return self.services.files.shared_files()
 
-    def get_shared_file(self, cid: str):
+    def get_shared_file(self, cid: str) -> Any:
         return self.services.files.shared_file_raw(cid)
 
     def get_peer_info_cache_snapshot(self) -> Dict[str, Dict[str, Any]]:
         return self.services.identity.snapshot()
 
-    def get_peer_info(self, peer_id: str):
+    def get_peer_info(self, peer_id: str) -> Any:
         return self.services.identity.raw_get(peer_id)
 
     def delete_peer_info(self, peer_id: str) -> bool:
@@ -521,16 +531,16 @@ class HeadlessService:
     def download_file(self, file_cid: str, file_name: str = "unknown") -> bool:
         return self.services.files.queue_download(file_cid, file_name)
 
-    def register_subscriber(self, kind: str = "message"):
+    def register_subscriber(self, kind: str = "message") -> Any:
         return self.services.notifications.register_subscriber(kind)
 
-    def unregister_subscriber(self, kind: str, queue) -> None:
+    def unregister_subscriber(self, kind: str, queue: Any) -> None:
         self.services.notifications.unsubscribe(kind, queue)
 
-    def get_message_queue(self):
+    def get_message_queue(self) -> Any:
         return self.message_queue
 
-    def get_system_queue(self):
+    def get_system_queue(self) -> Any:
         return self.system_queue
 
     def get_topic_messages(self, topic: str) -> List[Dict[str, Any]]:
@@ -539,20 +549,20 @@ class HeadlessService:
     def get_all_topics_with_info(self) -> Dict[str, Dict[str, Any]]:
         return self.services.storage.topics()
 
-    def mark_topic_as_read(self, topic: str):
+    def mark_topic_as_read(self, topic: str) -> None:
         self.services.storage.mark_read(topic)
 
     def get_unread_count(self, topic: str) -> int:
         return self.services.storage.unread(topic)
 
-    def get_outgoing_queue(self):
+    def get_outgoing_queue(self) -> Any:
         return self.outgoing_queue
 
-    async def get_peer_info_via_identify(self, peer_id):
+    async def get_peer_info_via_identify(self, peer_id: str) -> Any:
         return await self.services.identity.fetch_peer_info(peer_id)
 
-    async def get_cached_peer_info(self, peer_id: str):
+    async def get_cached_peer_info(self, peer_id: str) -> Any:
         return await self.services.identity.cached_peer_info(peer_id)
 
-    def get_public_key_for_peer(self, peer_id: str):
+    def get_public_key_for_peer(self, peer_id: str) -> Any:
         return self.services.identity.raw_public_key(peer_id)

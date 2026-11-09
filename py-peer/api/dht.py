@@ -12,7 +12,7 @@ from .base import BaseHandler
 class DHTStatusHandler(BaseHandler):
     """GET /api/v1/dht/status"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         self.send_success(self.discovery_service.dht_status())
@@ -21,7 +21,7 @@ class DHTStatusHandler(BaseHandler):
 class DHTPeersHandler(BaseHandler):
     """GET /api/v1/dht/peers"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         peers = self.discovery_service.dht_peers()
@@ -31,7 +31,7 @@ class DHTPeersHandler(BaseHandler):
 class DHTRoutingTableHandler(BaseHandler):
     """GET /api/v1/dht/routing-table"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         peers = self.discovery_service.dht_peers()

@@ -17,6 +17,7 @@ import time
 import logging
 import asyncio
 from queue import Empty
+from typing import Any
 
 import tornado.websocket
 
@@ -30,43 +31,48 @@ MESH_PUSH_INTERVAL  = 5.0
 class BaseWebSocketHandler(tornado.websocket.WebSocketHandler):
     """Shared WebSocket base: CORS + injected shared runtime."""
 
-    def initialize(self, runtime):
+    runtime: Any
+    service: Any
+    _running: bool
+    _task: asyncio.Task[None] | None
+
+    def initialize(self, runtime: Any) -> None:
         from .base import as_runtime
 
         self.runtime = as_runtime(runtime)
         self.service = self.runtime.service
         self._running = False
-        self._task: asyncio.Task | None = None
+        self._task = None
 
-    def check_origin(self, origin):
+    def check_origin(self, origin: str) -> bool:
         return True  # Allow all origins (CORS)
 
-    def open(self):
+    def open(self, *args: str, **kwargs: str) -> None:
         self._running = True
         logger.info(f"WS opened: {self.__class__.__name__}")
         self._task = asyncio.get_event_loop().create_task(self._push_loop())
 
-    def on_close(self):
+    def on_close(self) -> None:
         self._running = False
         if self._task:
             self._task.cancel()
         logger.info(f"WS closed: {self.__class__.__name__}")
 
-    def on_message(self, message):
+    def on_message(self, message: str | bytes) -> None:
         """Sub-classes override this to handle client commands."""
         pass
 
-    async def _push_loop(self):
+    async def _push_loop(self) -> None:
         """Override in subclass."""
         pass
 
-    def _safe_write(self, data: dict):
+    def _safe_write(self, data: dict[str, Any]) -> None:
         try:
             self.write_message(json.dumps(data))
         except tornado.websocket.WebSocketClosedError:
             self._running = False
 
-    def _subscribe_events(self, event_types):
+    def _subscribe_events(self, event_types: list[Any]) -> Any:
         """Subscribe to the runtime event bus, or return None if unavailable."""
         events = getattr(self.runtime, "events", None)
         if events is None:
@@ -86,13 +92,17 @@ class MessageStreamHandler(BaseWebSocketHandler):
         { "action": "unfilter" }
     """
 
-    def initialize(self, runtime):
+    _topic_filter: str | None
+    _subscription: Any
+    _legacy_queue: Any
+
+    def initialize(self, runtime: Any) -> None:
         super().initialize(runtime)
-        self._topic_filter: str | None = None
+        self._topic_filter = None
         self._subscription = None
         self._legacy_queue = None
 
-    def open(self):
+    def open(self, *args: str, **kwargs: str) -> None:
         from app.events import EventType
 
         # Every subscriber gets its own bounded queue: multiple tabs all see
@@ -102,7 +112,7 @@ class MessageStreamHandler(BaseWebSocketHandler):
             self._legacy_queue = self.service.register_subscriber("message")
         super().open()
 
-    def on_close(self):
+    def on_close(self) -> None:
         super().on_close()
         if self._subscription is not None:
             self.runtime.unsubscribe(self._subscription)
@@ -111,7 +121,7 @@ class MessageStreamHandler(BaseWebSocketHandler):
             self.service.unregister_subscriber("message", self._legacy_queue)
             self._legacy_queue = None
 
-    def on_message(self, raw):
+    def on_message(self, raw: str | bytes) -> None:
         try:
             cmd = json.loads(raw)
             action = cmd.get("action")
@@ -124,12 +134,13 @@ class MessageStreamHandler(BaseWebSocketHandler):
         except Exception:
             pass
 
-    async def _push_loop(self):
+    async def _push_loop(self) -> None:
         # Wait until service is ready
         while self._running and not (self.service and self.service.ready):
             await asyncio.sleep(0.2)
 
-        if self._subscription is None and self._legacy_queue is None:
+        legacy_queue = self._legacy_queue
+        if self._subscription is None and legacy_queue is None:
             return
 
         while self._running:
@@ -138,11 +149,13 @@ class MessageStreamHandler(BaseWebSocketHandler):
                     if self._subscription is not None:
                         event = self._subscription.get_nowait()
                         msg = None if event is None else event.data
-                    else:
+                    elif legacy_queue is not None:
                         try:
-                            msg = self._legacy_queue.sync_q.get_nowait()
+                            msg = legacy_queue.sync_q.get_nowait()
                         except Empty:
                             msg = None
+                    else:
+                        break
                     if msg is None:
                         break
                     if self._topic_filter and msg.get("topic") != self._topic_filter:
@@ -162,12 +175,15 @@ class MessageStreamHandler(BaseWebSocketHandler):
 class SystemStreamHandler(BaseWebSocketHandler):
     """Streams system events and service notifications."""
 
-    def initialize(self, runtime):
+    _subscription: Any
+    _legacy_queue: Any
+
+    def initialize(self, runtime: Any) -> None:
         super().initialize(runtime)
         self._subscription = None
         self._legacy_queue = None
 
-    def open(self):
+    def open(self, *args: str, **kwargs: str) -> None:
         from app.events import EventType
 
         self._subscription = self._subscribe_events([EventType.SYSTEM])
@@ -175,7 +191,7 @@ class SystemStreamHandler(BaseWebSocketHandler):
             self._legacy_queue = self.service.register_subscriber("system")
         super().open()
 
-    def on_close(self):
+    def on_close(self) -> None:
         super().on_close()
         if self._subscription is not None:
             self.runtime.unsubscribe(self._subscription)
@@ -184,11 +200,12 @@ class SystemStreamHandler(BaseWebSocketHandler):
             self.service.unregister_subscriber("system", self._legacy_queue)
             self._legacy_queue = None
 
-    async def _push_loop(self):
+    async def _push_loop(self) -> None:
         while self._running and not (self.service and self.service.ready):
             await asyncio.sleep(0.2)
 
-        if self._subscription is None and self._legacy_queue is None:
+        legacy_queue = self._legacy_queue
+        if self._subscription is None and legacy_queue is None:
             return
 
         while self._running:
@@ -197,11 +214,13 @@ class SystemStreamHandler(BaseWebSocketHandler):
                     if self._subscription is not None:
                         event = self._subscription.get_nowait()
                         payload = None if event is None else event.data
-                    else:
+                    elif legacy_queue is not None:
                         try:
-                            payload = self._legacy_queue.sync_q.get_nowait()
+                            payload = legacy_queue.sync_q.get_nowait()
                         except Empty:
                             payload = None
+                    else:
+                        break
                     if payload is None:
                         break
                     self._safe_write({"event": "system_message", "data": payload})
@@ -219,11 +238,11 @@ class SystemStreamHandler(BaseWebSocketHandler):
 class PeerUpdateHandler(BaseWebSocketHandler):
     """Pushes the current connected-peer list every PEERS_PUSH_INTERVAL seconds."""
 
-    async def _push_loop(self):
+    async def _push_loop(self) -> None:
         while self._running and not (self.service and self.service.ready):
             await asyncio.sleep(0.2)
 
-        last_peers: list = []
+        last_peers: list[str] = []
         while self._running:
             try:
                 peers = self.runtime.peer.connected_peers()
@@ -251,7 +270,7 @@ class PeerUpdateHandler(BaseWebSocketHandler):
 class MeshUpdateHandler(BaseWebSocketHandler):
     """Pushes GossipSub mesh topology every MESH_PUSH_INTERVAL seconds."""
 
-    async def _push_loop(self):
+    async def _push_loop(self) -> None:
         while self._running and not (self.service and self.service.ready):
             await asyncio.sleep(0.2)
 

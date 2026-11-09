@@ -16,7 +16,7 @@ from .base import BaseHandler
 class ServiceStatusHandler(BaseHandler):
     """GET /api/v1/service/status"""
 
-    def get(self):
+    def get(self) -> None:
         status = self.runtime.status()
         self.send_success({
             "state": status.state,
@@ -33,14 +33,14 @@ class ServiceStatusHandler(BaseHandler):
 class ServiceConfigHandler(BaseHandler):
     """GET /api/v1/service/config"""
 
-    def get(self):
+    def get(self) -> None:
         self.send_success(self.runtime.config_snapshot())
 
 
 class ServiceStopHandler(BaseHandler):
     """POST /api/v1/service/stop — graceful shutdown"""
 
-    def post(self):
+    def post(self) -> None:
         # ``request_stop`` only sets a thread-safe event. The trio thread that
         # owns the host performs the teardown, so this returns immediately.
         self.runtime.request_stop()
@@ -50,7 +50,7 @@ class ServiceStopHandler(BaseHandler):
 class ServiceBootstrapHandler(BaseHandler):
     """POST /api/v1/service/bootstrap — re-trigger bootstrap peer connections"""
 
-    def post(self):
+    def post(self) -> None:
         if not self.require_ready():
             return
         self.send_success(self.discovery_service.bootstrap(), status=202)

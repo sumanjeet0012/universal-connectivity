@@ -10,6 +10,7 @@ import json
 import time
 import logging
 import traceback
+from typing import Any
 
 import tornado.web
 
@@ -18,7 +19,7 @@ from app.errors import ApplicationError
 logger = logging.getLogger("api.base")
 
 
-def as_runtime(candidate):
+def as_runtime(candidate: Any) -> Any:
     """Return an ApplicationRuntime for ``candidate``.
 
     ``TornadoServer`` passes a runtime. Tests and older embedders may still pass
@@ -45,7 +46,13 @@ def as_runtime(candidate):
         pass
     return runtime
 
-def parse_string_field(body, field, default="", required=False, max_length=None):
+def parse_string_field(
+    body: dict[str, Any],
+    field: str,
+    default: str = "",
+    required: bool = False,
+    max_length: int | None = None,
+) -> str:
     """
     Extract a string field from a parsed JSON object.
 
@@ -71,7 +78,10 @@ def parse_string_field(body, field, default="", required=False, max_length=None)
 class BaseHandler(tornado.web.RequestHandler):
     """Base class for all REST API handlers."""
 
-    def initialize(self, runtime):
+    runtime: Any
+    service: Any
+
+    def initialize(self, runtime: Any) -> None:
         """Inject the shared ApplicationRuntime (or a bare service)."""
         self.runtime = as_runtime(runtime)
         # Kept for compatibility with embedders that still reach for the engine.
@@ -79,43 +89,43 @@ class BaseHandler(tornado.web.RequestHandler):
 
     # Convenience accessors used by handlers.
     @property
-    def peer_service(self):
+    def peer_service(self) -> Any:
         return self.runtime.peer
 
     @property
-    def connection_service(self):
+    def connection_service(self) -> Any:
         return self.runtime.connections
 
     @property
-    def messaging_service(self):
+    def messaging_service(self) -> Any:
         return self.runtime.messaging
 
     @property
-    def discovery_service(self):
+    def discovery_service(self) -> Any:
         return self.runtime.discovery
 
     @property
-    def identity_service(self):
+    def identity_service(self) -> Any:
         return self.runtime.identity
 
     @property
-    def file_service(self):
+    def file_service(self) -> Any:
         return self.runtime.files
 
     @property
-    def storage_service(self):
+    def storage_service(self) -> Any:
         return self.runtime.storage
 
     # ------------------------------------------------------------------ #
     #  CORS                                                                #
     # ------------------------------------------------------------------ #
-    def set_default_headers(self):
+    def set_default_headers(self) -> None:
         self.set_header("Access-Control-Allow-Origin", "*")
         self.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.set_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
         self.set_header("Content-Type", "application/json")
 
-    def options(self, *args, **kwargs):
+    def options(self, *args: str, **kwargs: str) -> None:
         """Handle CORS preflight."""
         self.set_status(204)
         self.finish()
@@ -123,7 +133,7 @@ class BaseHandler(tornado.web.RequestHandler):
     # ------------------------------------------------------------------ #
     #  JSON helpers                                                        #
     # ------------------------------------------------------------------ #
-    def send_success(self, data=None, status=200):
+    def send_success(self, data: Any = None, status: int = 200) -> None:
         self.set_status(status)
         self.finish(json.dumps({
             "success": True,
@@ -132,7 +142,12 @@ class BaseHandler(tornado.web.RequestHandler):
             "timestamp": time.time(),
         }))
 
-    def send_error_response(self, message, status=400, detail=None):
+    def send_error_response(
+        self,
+        message: str,
+        status: int = 400,
+        detail: str | None = None,
+    ) -> None:
         self.set_status(status)
         self.finish(json.dumps({
             "success": False,
@@ -148,7 +163,7 @@ class BaseHandler(tornado.web.RequestHandler):
     # ------------------------------------------------------------------ #
     #  Request body helpers                                                #
     # ------------------------------------------------------------------ #
-    def get_json_body(self):
+    def get_json_body(self) -> dict[str, Any]:
         try:
             body = json.loads(self.request.body)
         except Exception:
@@ -160,7 +175,7 @@ class BaseHandler(tornado.web.RequestHandler):
     # ------------------------------------------------------------------ #
     #  Service readiness guard                                             #
     # ------------------------------------------------------------------ #
-    def require_ready(self):
+    def require_ready(self) -> bool:
         """Return False and send 503 if the runtime is not ready yet."""
         if not self.runtime.ready:
             self.send_error_response(
@@ -170,7 +185,7 @@ class BaseHandler(tornado.web.RequestHandler):
             return False
         return True
 
-    def require_topic(self, topic):
+    def require_topic(self, topic: str) -> bool:
         """Return False and send 404 unless ``topic`` is subscribed."""
         if topic not in self.messaging_service.subscribed_topics():
             self.send_error_response(
@@ -183,7 +198,7 @@ class BaseHandler(tornado.web.RequestHandler):
     # ------------------------------------------------------------------ #
     #  Application error translation                                       #
     # ------------------------------------------------------------------ #
-    def _handle_request_exception(self, exc):
+    def _handle_request_exception(self, exc: BaseException) -> None:
         """Map service-layer errors onto the existing HTTP envelope.
 
         Services raise ApplicationError subclasses with an ``http_status``; the
@@ -207,7 +222,7 @@ class BaseHandler(tornado.web.RequestHandler):
     # ------------------------------------------------------------------ #
     #  Global exception handler                                            #
     # ------------------------------------------------------------------ #
-    def write_error(self, status_code, **kwargs):
+    def write_error(self, status_code: int, **kwargs: Any) -> None:
         exc_info = kwargs.get("exc_info")
         if exc_info:
             # Keep the traceback in the server log; do not expose internal

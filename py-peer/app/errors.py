@@ -9,6 +9,8 @@ Rules:
 - ``detail`` carries optional machine-readable context.
 """
 
+from typing import Any
+
 
 class ApplicationError(Exception):
     """Base class for application-level failures."""
@@ -21,7 +23,7 @@ class ApplicationError(Exception):
         self.message = message
         self.detail = detail
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         payload = {"code": self.code, "message": self.message}
         if self.detail:
             payload["detail"] = self.detail

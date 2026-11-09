@@ -275,6 +275,44 @@ below. Upgrading the package leaves that directory untouched.
 separately exercised in this repository; the clean-venv install above is the
 verified path.
 
+### Static type checks
+
+The application code is checked with mypy and Pyrefly, matching py-libp2p's
+two-checker setup. libp2p ships type information, so the transport and chat
+layers use its interfaces (`IHost`, `ISubscriptionAPI`, `Message`) instead of
+untyped stand-ins.
+
+```bash
+pip install -r requirements-dev.txt
+mypy
+pyrefly check
+```
+
+`mypy` reads `[tool.mypy]` in `pyproject.toml`, checks `main.py`, `core`, `app`,
+`api`, and `ui`, and reports the same errors in CI or locally. The configuration
+follows py-libp2p's strict policy: every function is annotated, untyped calls
+and bare generics are rejected, and optional/equality checking stays strict.
+
+`pyrefly` reads `[tool.pyrefly]` from the same file and checks the same modules.
+Its report is also clean. The optional RAG tree (`llm/`) and packages that do
+not ship type information in every install are excluded or treated as `Any`.
+Tornado's handler override check is relaxed for `api/` and the RAG handler
+because route arguments are not part of Tornado's base method signatures;
+all other Pyrefly checks stay enabled.
+
+The same checks are available through the py-libp2p-style wrappers:
+
+```bash
+tox -e type
+pre-commit run mypy-local --all-files
+pre-commit run pyrefly-local --all-files
+```
+
+The GitHub Actions workflow lives at the repository root in
+`.github/workflows/py-peer-typecheck.yml`. It runs the identical `mypy` and
+`pyrefly` commands with `py-peer` as the working directory whenever `py-peer`
+changes.
+
 ## 🐳 Docker Deployment
 
 The `Dockerfile` and `docker-compose.yml` run the peer in headless mode with the

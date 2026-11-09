@@ -12,7 +12,7 @@ import json
 import sqlite3
 import threading
 import time
-from typing import Iterable
+from typing import Any, Iterable
 
 from ..errors import StorageError, ValidationError
 
@@ -42,7 +42,7 @@ def _peer_record(
     agent_version: str | None = None,
     protocol_version: str | None = None,
     updated_at: float | None = None,
-) -> dict:
+) -> dict[str, Any]:
     return {
         "peer_id": _check_peer_id(peer_id),
         "public_key_hex": public_key_hex,
@@ -57,22 +57,22 @@ def _peer_record(
 class MemoryPeerRepository:
     backend = "memory"
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._peers: dict[str, dict] = {}
+        self._peers: dict[str, dict[str, Any]] = {}
 
-    def upsert(self, peer_id: str, **fields) -> dict:
+    def upsert(self, peer_id: str, **fields: Any) -> dict[str, Any]:
         record = _peer_record(peer_id, **fields)
         with self._lock:
             self._peers[record["peer_id"]] = record
         return dict(record)
 
-    def get(self, peer_id: str) -> dict | None:
+    def get(self, peer_id: str) -> dict[str, Any] | None:
         with self._lock:
             record = self._peers.get(_check_peer_id(peer_id))
             return dict(record) if record else None
 
-    def list(self, limit: int = 100, offset: int = 0) -> list[dict]:
+    def list(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         limit, offset = _check_page(limit, offset)
         with self._lock:
             records = sorted(
@@ -97,7 +97,7 @@ class SqlitePeerRepository:
         self._lock = lock
 
     @staticmethod
-    def _row_to_record(row: sqlite3.Row) -> dict:
+    def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "peer_id": row["peer_id"],
             "public_key_hex": row["public_key"],
@@ -108,7 +108,7 @@ class SqlitePeerRepository:
             "updated_at": row["updated_at"],
         }
 
-    def upsert(self, peer_id: str, **fields) -> dict:
+    def upsert(self, peer_id: str, **fields: Any) -> dict[str, Any]:
         record = _peer_record(peer_id, **fields)
         try:
             with self._lock, self._connection:
@@ -140,7 +140,7 @@ class SqlitePeerRepository:
             raise StorageError(f"Could not store peer metadata: {exc}") from exc
         return record
 
-    def get(self, peer_id: str) -> dict | None:
+    def get(self, peer_id: str) -> dict[str, Any] | None:
         try:
             with self._lock:
                 row = self._connection.execute(
@@ -150,7 +150,7 @@ class SqlitePeerRepository:
             raise StorageError(f"Could not read peer metadata: {exc}") from exc
         return self._row_to_record(row) if row is not None else None
 
-    def list(self, limit: int = 100, offset: int = 0) -> list[dict]:
+    def list(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         limit, offset = _check_page(limit, offset)
         try:
             with self._lock:
@@ -193,7 +193,7 @@ def _check_key(key: str) -> str:
 class MemorySettingsRepository:
     backend = "memory"
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.RLock()
         self._values: dict[str, str] = {}
 

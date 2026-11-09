@@ -13,6 +13,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from libp2p.crypto.ed25519 import create_new_key_pair
 from libp2p.identity.identify.identify import (
@@ -36,7 +37,7 @@ logger = logging.getLogger("app.services.identity")
 CACHE_TTL_SECONDS = 300.0
 
 
-def _save_identity_atomically(key_pair, path: Path) -> None:
+def _save_identity_atomically(key_pair: Any, path: Path) -> None:
     """Persist a private key without leaving a half-written file behind.
 
     ``save_identity`` writes the libp2p protobuf format and sets mode 0600 on
@@ -63,13 +64,13 @@ class IdentityService:
     as hex strings through the adapter-facing API.
     """
 
-    def __init__(self, engine):
+    def __init__(self, engine: Any) -> None:
         self._engine = engine
-        self._cache: dict[str, dict] = {}
+        self._cache: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
     @property
-    def engine(self):
+    def engine(self) -> Any:
         return self._engine
 
     # ------------------------------------------------------------------ #
@@ -84,7 +85,7 @@ class IdentityService:
     def peer_id(self) -> str:
         return str(self._engine.host.get_id())
 
-    def load_identity(self):
+    def load_identity(self) -> Any:
         """Return the key pair this host runs with.
 
         Resolution order is deliberate, because the peer ID is derived from the
@@ -153,7 +154,7 @@ class IdentityService:
     # ------------------------------------------------------------------ #
     #  Identify protocol
     # ------------------------------------------------------------------ #
-    async def fetch_peer_info(self, peer_id):
+    async def fetch_peer_info(self, peer_id: Any) -> Any:
         """Get peer information using the official identify protocol."""
         try:
             logger.info(f"🔍 Requesting identify info from peer: {peer_id}")
@@ -210,7 +211,9 @@ class IdentityService:
             logger.error(f"❌ Failed to get identify info from peer {peer_id}: {e}")
             return None
 
-    async def cached_peer_info(self, peer_id: str):
+    async def cached_peer_info(
+        self, peer_id: str
+    ) -> dict[str, Any] | None:
         """Get cached peer info, or fetch it if unavailable/stale."""
         peer_id_str = str(peer_id)
 
@@ -237,18 +240,20 @@ class IdentityService:
         return None
 
     # Compatibility aliases for the previous engine method names.
-    async def get_peer_info_via_identify(self, peer_id):
+    async def get_peer_info_via_identify(self, peer_id: Any) -> Any:
         return await self.fetch_peer_info(peer_id)
 
-    async def get_cached_peer_info(self, peer_id: str):
+    async def get_cached_peer_info(
+        self, peer_id: str
+    ) -> dict[str, Any] | None:
         return await self.cached_peer_info(peer_id)
 
-    def snapshot(self) -> dict[str, dict]:
+    def snapshot(self) -> dict[str, dict[str, Any]]:
         """Snapshot the raw identify cache for API/engine readout."""
         with self._lock:
             return {peer_id: dict(info) for peer_id, info in self._cache.items()}
 
-    def raw_get(self, peer_id: str):
+    def raw_get(self, peer_id: str) -> dict[str, Any] | None:
         with self._lock:
             info = self._cache.get(peer_id)
             return dict(info) if info else None
@@ -257,7 +262,7 @@ class IdentityService:
         with self._lock:
             return self._cache.pop(peer_id, None) is not None
 
-    def raw_public_key(self, peer_id: str):
+    def raw_public_key(self, peer_id: str) -> Any:
         with self._lock:
             info = self._cache.get(peer_id)
             return info.get("public_key") if info else None
@@ -272,7 +277,9 @@ class IdentityService:
         return peer_id.strip()
 
     @staticmethod
-    def _serialize(peer_id: str, info: dict) -> dict:
+    def _serialize(
+        peer_id: str, info: dict[str, Any]
+    ) -> dict[str, Any]:
         return {
             "peer_id": peer_id,
             "protocol_version": info.get("protocol_version"),
@@ -282,13 +289,13 @@ class IdentityService:
             "cached_at": info.get("timestamp"),
         }
 
-    def cache(self) -> dict:
+    def cache(self) -> dict[str, Any]:
         return {
             peer_id: self._serialize(peer_id, info)
             for peer_id, info in self.snapshot().items()
         }
 
-    def get(self, peer_id: str) -> dict:
+    def get(self, peer_id: str) -> dict[str, Any]:
         peer_id = self._normalize_peer_id(peer_id)
         info = self.raw_get(peer_id)
         if not info:

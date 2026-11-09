@@ -17,13 +17,13 @@ logger = logging.getLogger("app.services.peer")
 class PeerService:
     """Local identity plus read-only peer state."""
 
-    def __init__(self, engine, notifications=None):
+    def __init__(self, engine: Any, notifications: Any = None) -> None:
         self._engine = engine
         self._notifications = notifications
         self._known_connected_peers: set[str] = set()
 
     @property
-    def engine(self):
+    def engine(self) -> Any:
         return self._engine
 
     def identity(self) -> PeerIdentity:
@@ -65,7 +65,7 @@ class PeerService:
         info = self.connection_info_dict()
         return ConnectionSummary(
             peer_id=info.get("peer_id", ""),
-            nickname=info.get("nickname", self._engine.nickname),
+            nickname=str(info.get("nickname") or self._engine.nickname),
             multiaddr=info.get("multiaddr"),
             multiaddrs=list(info.get("multiaddrs") or []),
             listen_addrs=list(info.get("listen_addrs") or []),

@@ -35,7 +35,7 @@ def _as_float(value: Any, default: float) -> float:
         return default
 
 
-def message_identity(message: dict) -> str:
+def message_identity(message: dict[str, Any]) -> str:
     """Return the stable identity of a chat message.
 
     Identity is ``(topic, sender, timestamp, content)``. GossipSub may deliver
@@ -57,7 +57,7 @@ def message_identity(message: dict) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def normalize_message(message: dict) -> dict:
+def normalize_message(message: dict[str, Any]) -> dict[str, Any]:
     """Coerce a network/UI message into the stored shape.
 
     Network input is untrusted, so unknown keys are dropped and scalar fields
@@ -117,11 +117,11 @@ class InMemoryMessageStore:
     def __init__(self, retention: int = DEFAULT_RETENTION):
         self.retention = _check_retention(retention)
         self._lock = threading.RLock()
-        self._by_topic: dict[str, list[dict]] = {}
+        self._by_topic: dict[str, list[dict[str, Any]]] = {}
         self._seen: set[str] = set()
         self._unread: dict[str, int] = {}
 
-    def append(self, message: dict, keep: int | None = None) -> bool:
+    def append(self, message: dict[str, Any], keep: int | None = None) -> bool:
         data = normalize_message(message)
         limit = _check_retention(keep if keep is not None else self.retention)
         topic = data["topic"]
@@ -144,7 +144,9 @@ class InMemoryMessageStore:
                         self._unread[topic] = max(0, self._unread.get(topic, 0) - 1)
             return True
 
-    def page(self, topic: str, limit: int = 100, offset: int = 0):
+    def page(
+        self, topic: str, limit: int = 100, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
         limit, offset = _check_page(limit, offset)
         with self._lock:
             messages = self._by_topic.get(topic, [])
@@ -167,7 +169,7 @@ class InMemoryMessageStore:
             self._unread[topic] = 0
             return marked
 
-    def stats(self, topic: str) -> dict:
+    def stats(self, topic: str) -> dict[str, Any]:
         with self._lock:
             messages = self._by_topic.get(topic, [])
             return {
@@ -180,7 +182,7 @@ class InMemoryMessageStore:
         with self._lock:
             return sum(len(messages) for messages in self._by_topic.values())
 
-    def health(self) -> dict:
+    def health(self) -> dict[str, Any]:
         return {
             "backend": self.backend,
             "durable": self.durable,
@@ -193,7 +195,7 @@ class InMemoryMessageStore:
         pass
 
 
-def _row_to_message(row: sqlite3.Row) -> dict:
+def _row_to_message(row: sqlite3.Row) -> dict[str, Any]:
     data = {
         "message_id": row["id"],
         "type": row["kind"],
@@ -228,7 +230,7 @@ class SqliteMessageStore:
         self._connection = connection
         self._lock = lock
 
-    def append(self, message: dict, keep: int | None = None) -> bool:
+    def append(self, message: dict[str, Any], keep: int | None = None) -> bool:
         data = normalize_message(message)
         limit = _check_retention(keep if keep is not None else self.retention)
         topic = data["topic"]
@@ -278,7 +280,9 @@ class SqliteMessageStore:
         except sqlite3.Error as exc:
             raise StorageError(f"Could not store message: {exc}") from exc
 
-    def page(self, topic: str, limit: int = 100, offset: int = 0):
+    def page(
+        self, topic: str, limit: int = 100, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
         limit, offset = _check_page(limit, offset)
         try:
             with self._lock:
@@ -319,7 +323,7 @@ class SqliteMessageStore:
         except sqlite3.Error as exc:
             raise StorageError(f"Could not mark messages as read: {exc}") from exc
 
-    def stats(self, topic: str) -> dict:
+    def stats(self, topic: str) -> dict[str, Any]:
         try:
             with self._lock:
                 total = self._connection.execute(
@@ -350,7 +354,7 @@ class SqliteMessageStore:
         except sqlite3.Error as exc:
             raise StorageError(f"Could not count messages: {exc}") from exc
 
-    def health(self) -> dict:
+    def health(self) -> dict[str, Any]:
         return {
             "backend": self.backend,
             "durable": self.durable,

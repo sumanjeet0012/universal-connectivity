@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from queue import Empty, Full
+from typing import Any
 
 import multiaddr
 import trio
@@ -18,13 +19,18 @@ logger = logging.getLogger("app.services.connection")
 class ConnectionService:
     """Queue outbound dials, run configured dials, and inspect state."""
 
-    def __init__(self, engine, addresses=None, notifications=None):
+    def __init__(
+        self,
+        engine: Any,
+        addresses: Any = None,
+        notifications: Any = None,
+    ) -> None:
         self._engine = engine
         self._addresses = addresses
         self._notifications = notifications
 
     @property
-    def engine(self):
+    def engine(self) -> Any:
         return self._engine
 
     @staticmethod
@@ -55,7 +61,7 @@ class ConnectionService:
             normalized = normalized.replace("/ip6/::/", "/ip6/::1/")
         return normalized
 
-    def connect(self, maddr: str) -> dict:
+    def connect(self, maddr: str) -> dict[str, Any]:
         """Queue a dial request. Returns a small acknowledgement payload."""
         target = self.validate_multiaddr(maddr)
         if not getattr(self._engine, "ready", False):
@@ -162,7 +168,7 @@ class ConnectionService:
                 logger.error(f"❌ Failed to connect to {addr_str}: {e}")
                 await self._system(f"Failed to connect to {addr_str}: {e}")
 
-    async def inspect_peer_protocols(self, peer_id) -> None:
+    async def inspect_peer_protocols(self, peer_id: Any) -> None:
         """Inspect and log all protocols supported by a peer."""
         try:
             logger.info(f"🔍 Checking peerstore for peer: {peer_id}")
@@ -208,7 +214,7 @@ class ConnectionService:
             logger.warning(f"⚠️  Error inspecting peer protocols: {e}")
             logger.info(f"✅ Peer {peer_id} connected successfully")
 
-    async def check_pubsub_status(self, peer_id) -> None:
+    async def check_pubsub_status(self, peer_id: Any) -> None:
         """Check the PubSub connection status with a specific peer."""
         try:
             logger.info(f"🔍 Checking PubSub status for peer: {peer_id}")

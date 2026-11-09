@@ -14,7 +14,7 @@ from .base import BaseHandler
 class PubSubPeersHandler(BaseHandler):
     """GET /api/v1/pubsub/peers"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         peers = self.discovery_service.pubsub_peers()
@@ -24,7 +24,7 @@ class PubSubPeersHandler(BaseHandler):
 class PubSubMeshHandler(BaseHandler):
     """GET /api/v1/pubsub/mesh"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         mesh = self.discovery_service.mesh()
@@ -39,7 +39,7 @@ class PubSubMeshHandler(BaseHandler):
 class PubSubFanoutHandler(BaseHandler):
     """GET /api/v1/pubsub/fanout"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         self.send_success({"fanout": self.discovery_service.fanout()})
@@ -48,7 +48,7 @@ class PubSubFanoutHandler(BaseHandler):
 class PubSubConfigHandler(BaseHandler):
     """GET /api/v1/pubsub/config"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         self.send_success(self.discovery_service.gossipsub_config())
@@ -57,7 +57,7 @@ class PubSubConfigHandler(BaseHandler):
 class PubSubSubscriptionsHandler(BaseHandler):
     """GET /api/v1/pubsub/subscriptions"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         topics = self.discovery_service.subscriptions()

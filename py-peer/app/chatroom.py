@@ -5,6 +5,8 @@ This module handles chat room functionality including message handling,
 pubsub subscriptions, and peer discovery.
 """
 
+from __future__ import annotations
+
 import base58
 import json
 import logging
@@ -12,11 +14,12 @@ import os
 import threading
 import time
 import trio
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
-from typing import Set, Optional, AsyncIterator
+from typing import Any, Set
 
-from libp2p.host.basic_host import BasicHost
+from libp2p.abc import IHost, ISubscriptionAPI
 from libp2p.pubsub.pb.rpc_pb2 import Message
 from libp2p.pubsub.pubsub import Pubsub
 
@@ -37,7 +40,7 @@ system_logger.addHandler(logging.NullHandler())
 system_log_path: str | None = None
 
 
-def configure_system_log(path=None) -> str | None:
+def configure_system_log(path: str | os.PathLike[str] | None = None) -> str | None:
     """Send system messages to a rotating file at ``path``.
 
     Called by the runtime once the data directory is known. Idempotent: an
@@ -57,7 +60,7 @@ def configure_system_log(path=None) -> str | None:
     if path is None:
         return None
 
-    target = os.path.abspath(os.path.expanduser(os.fspath(path)))
+    target = os.path.abspath(os.path.expanduser(str(path)))
     try:
         directory = os.path.dirname(target)
         if directory:
@@ -99,7 +102,7 @@ MAX_TOPIC_NAME_LENGTH = 128
 MAX_TOPICS = 100
 
 
-def _snapshot_keys(mapping, attempts: int = 3):
+def _snapshot_keys(mapping: Mapping[Any, Any], attempts: int = 3) -> list[str]:
     """
     Copy a dict's keys from a thread that does not own the dict.
 
@@ -110,7 +113,7 @@ def _snapshot_keys(mapping, attempts: int = 3):
     """
     for _ in range(attempts):
         try:
-            return list(mapping.keys())
+            return [str(key) for key in mapping.keys()]
         except RuntimeError:
             continue
     return []
@@ -122,13 +125,9 @@ class ChatMessage:
     message: str
     sender_id: str
     sender_nick: str
-    topic: str = None  # Topic the message was received on
-    timestamp: Optional[float] = None
-    message_id: Optional[str] = None
-    
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = time.time()
+    topic: str | None = None  # Topic the message was received on
+    timestamp: float = field(default_factory=time.time)
+    message_id: str | None = None
 
 
 class ChatRoom:
@@ -138,7 +137,15 @@ class ChatRoom:
     through callback functions.
     """
     
-    def __init__(self, host: BasicHost, pubsub: Pubsub, nickname: str, multiaddr: str = None, headless_service=None, topic: str = None):
+    def __init__(
+        self,
+        host: IHost,
+        pubsub: Pubsub,
+        nickname: str,
+        multiaddr: str | None = None,
+        headless_service: Any = None,
+        topic: str | None = None,
+    ):
         self.host = host
         self.pubsub = pubsub
         self.nickname = nickname
@@ -155,24 +162,28 @@ class ChatRoom:
             )
         
         # Subscriptions - now a dictionary to track all subscriptions
-        self.subscriptions = {}  # topic_name -> subscription object
-        self.chat_subscription = None
-        self.discovery_subscription = None
-        self.profile_subscription = None
+        self.subscriptions: dict[str, ISubscriptionAPI] = {}
+        self.chat_subscription: ISubscriptionAPI | None = None
+        self.discovery_subscription: ISubscriptionAPI | None = None
+        self.profile_subscription: ISubscriptionAPI | None = None
         self.peer_nicknames: dict[str, str] = {}
         self._nickname_lock = threading.RLock()
         
         # Message handlers
-        self.message_handlers = []
-        self.system_message_handlers = []
-        
+        self.message_handlers: list[
+            Callable[[ChatMessage], Awaitable[None]]
+        ] = []
+        self.system_message_handlers: list[
+            Callable[[str], Awaitable[None]]
+        ] = []
+
         # Topic handlers - stores (topic_name, subscription) for dynamic topics
-        self.topic_handlers = []
-        self.active_topic_handlers = set()  # Track which topics already have handlers running
-        
+        self.topic_handlers: list[tuple[str, ISubscriptionAPI]] = []
+        self.active_topic_handlers: set[str] = set()
+
         # Running state
         self.running = False
-        self.nursery = None  # Store nursery reference for spawning new handlers
+        self.nursery: trio.Nursery | None = None
         
         logger.info(f"ChatRoom initialized for peer {self.peer_id[:8]}... with nickname '{nickname}'")
         logger.info(f"Chat topic: {self.chat_topic}")
@@ -182,12 +193,20 @@ class ChatRoom:
         self._log_system_message(f"Multiaddr: {self.multiaddr}")
         self._log_system_message("Commands: /quit, /peers, /status, /multiaddr")
     
-    def _log_system_message(self, message: str):
+    def _log_system_message(self, message: str) -> None:
         """Log system message to file."""
         system_logger.info(message)
     
     @classmethod
-    async def join_chat_room(cls, host: BasicHost, pubsub: Pubsub, nickname: str, multiaddr: str = None, headless_service=None, topic: str = None) -> "ChatRoom":
+    async def join_chat_room(
+        cls,
+        host: IHost,
+        pubsub: Pubsub,
+        nickname: str,
+        multiaddr: str | None = None,
+        headless_service: Any = None,
+        topic: str | None = None,
+    ) -> ChatRoom:
         """Create and join a chat room."""
         chat_room = cls(host, pubsub, nickname, multiaddr, headless_service, topic)
         await chat_room._subscribe_to_topics()
@@ -195,7 +214,7 @@ class ChatRoom:
         chat_room._log_system_message(f"Joined chat room as '{nickname}'")
         return chat_room
     
-    async def _subscribe_to_topics(self):
+    async def _subscribe_to_topics(self) -> None:
         """Subscribe to all necessary topics."""
         try:
             # Subscribe to chat topic (either custom or default)
@@ -226,7 +245,7 @@ class ChatRoom:
             self._log_system_message(f"ERROR: Failed to subscribe to topics: {e}")
             raise
     
-    async def publish_message(self, message: str):
+    async def publish_message(self, message: str) -> None:
         """Publish a chat message in plain text format (Go-compatible)."""
         try:
             # Check if we have any peers connected
@@ -249,7 +268,7 @@ class ChatRoom:
             print(f"❌ Error sending message: {e}")
             self._log_system_message(f"ERROR: Failed to publish message: {e}")
     
-    async def publish_to_topic(self, topic: str, message: str):
+    async def publish_to_topic(self, topic: str, message: str) -> bool:
         """Publish a message to a specific topic."""
         try:
             # The discovery topic is a protocol channel, not a chat channel.
@@ -276,7 +295,9 @@ class ChatRoom:
             self._log_system_message(f"ERROR: Failed to publish message to topic '{topic}': {e}")
             return False
     
-    async def _validate_message_with_identify(self, message, sender_id):
+    async def _validate_message_with_identify(
+        self, message: Message, sender_id: str
+    ) -> bool:
         """Validate message using identify protocol to get sender's public key.
         
         This should only be called for messages from OTHER peers that don't include
@@ -308,7 +329,9 @@ class ChatRoom:
             logger.error(f"❌ Error validating message with identify: {e}")
             return True  # Default to accepting message on error
     
-    async def _handle_topic_messages(self, topic_name: str, subscription):
+    async def _handle_topic_messages(
+        self, topic_name: str, subscription: ISubscriptionAPI
+    ) -> None:
         """Handle incoming messages for chat topics; drain protocol topics."""
         logger.debug(f"📨 Starting message handler for topic: {topic_name}")
 
@@ -416,7 +439,9 @@ class ChatRoom:
         except Exception as e:
             logger.error(f"❌ Error in message handler for topic '{topic_name}': {e}")
     
-    async def _message_stream(self, subscription) -> AsyncIterator[Message]:
+    async def _message_stream(
+        self, subscription: ISubscriptionAPI
+    ) -> AsyncIterator[Message]:
         """Create an async iterator for subscription messages."""
         while self.running:
             try:
@@ -426,7 +451,7 @@ class ChatRoom:
                 logger.error(f"Error getting message from subscription: {e}")
                 await trio.sleep(1)  # Avoid tight loop on error
     
-    async def start_message_handlers(self):
+    async def start_message_handlers(self) -> None:
         """Start all message handler tasks."""
         self.running = True
         
@@ -437,8 +462,12 @@ class ChatRoom:
             # Start background task to monitor for new topic subscriptions
             nursery.start_soon(self._monitor_new_topics)
     
-    async def _monitor_new_topics(self):
+    async def _monitor_new_topics(self) -> None:
         """Monitor for new topic subscriptions and start handlers for them."""
+        nursery = self.nursery
+        if nursery is None:
+            logger.error("Cannot monitor topics before the nursery is created")
+            return
         while self.running:
             try:
                 # Check if there are any new topics that need handlers
@@ -447,7 +476,7 @@ class ChatRoom:
                         logger.info(f"Starting message handler for topic: {topic_name}")
                         
                         # Use generic handler for all topics (including chat and discovery)
-                        self.nursery.start_soon(self._handle_topic_messages, topic_name, subscription)
+                        nursery.start_soon(self._handle_topic_messages, topic_name, subscription)
                         self.active_topic_handlers.add(topic_name)
                 
                 # Check periodically (every 0.5 seconds)
@@ -457,15 +486,19 @@ class ChatRoom:
                 logger.error(f"Error in topic monitor: {e}")
                 await trio.sleep(1)
     
-    def add_message_handler(self, handler):
+    def add_message_handler(
+        self, handler: Callable[[ChatMessage], Awaitable[None]]
+    ) -> None:
         """Add a custom message handler."""
         self.message_handlers.append(handler)
-    
-    def add_system_message_handler(self, handler):
+
+    def add_system_message_handler(
+        self, handler: Callable[[str], Awaitable[None]]
+    ) -> None:
         """Add a custom system message handler."""
         self.system_message_handlers.append(handler)
-    
-    async def run_interactive(self):
+
+    async def run_interactive(self) -> None:
         """Run interactive chat mode."""
         print(f"\n=== Universal Connectivity Chat ===")
         print(f"Nickname: {self.nickname}")
@@ -481,7 +514,7 @@ class ChatRoom:
             # Start input handler
             nursery.start_soon(self._input_handler)
     
-    async def _input_handler(self):
+    async def _input_handler(self) -> None:
         """Handle user input in interactive mode."""
         try:
             while self.running:
@@ -537,7 +570,7 @@ class ChatRoom:
             logger.error(f"Fatal error in input handler: {e}")
             self.running = False
     
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop the chat room."""
         self.running = False
         logger.info("ChatRoom stopped")

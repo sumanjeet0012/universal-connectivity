@@ -18,7 +18,7 @@ class PeerIdentity:
     peer_id: str
     nickname: str
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {"peer_id": self.peer_id, "nickname": self.nickname}
 
 
@@ -37,7 +37,7 @@ class ConnectionSummary:
     def peer_count(self) -> int:
         return len(self.connected_peers)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "peer_id": self.peer_id,
             "nickname": self.nickname,
@@ -67,7 +67,7 @@ class ServiceStatus:
     multiaddrs: list[str] = field(default_factory=list)
     listen_addrs: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "state": self.state,
             "ready": self.ready,
@@ -124,7 +124,7 @@ class RuntimeConfig:
             data_dir=getattr(args, "data_dir", None) or None,
         )
 
-    def service_kwargs(self, *, identity_path: str | None = None) -> dict:
+    def service_kwargs(self, *, identity_path: str | None = None) -> dict[str, Any]:
         """Keyword arguments for ``HeadlessService``.
 
         ``identity_path`` is injected by the runtime after the data directory

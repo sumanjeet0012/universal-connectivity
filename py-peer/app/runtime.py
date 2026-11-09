@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any
 
 import trio
 
@@ -30,10 +31,10 @@ class ApplicationRuntime:
         self,
         config: RuntimeConfig | None = None,
         *,
-        service=None,
-        event_bus=None,
-        store=None,
-    ):
+        service: Any = None,
+        event_bus: Any = None,
+        store: Any = None,
+    ) -> None:
         if config is None and service is None:
             raise ValueError("ApplicationRuntime requires config= or service=")
         self.config = config
@@ -41,6 +42,7 @@ class ApplicationRuntime:
         self.paths: DataPaths | None = None
 
         if service is None:
+            assert config is not None
             from .chatroom import configure_system_log
             from core.headless import HeadlessService
 
@@ -124,7 +126,7 @@ class ApplicationRuntime:
         return self._explicit_failure or bool(getattr(self.service, "failed", False))
 
     @property
-    def stop_event(self):
+    def stop_event(self) -> Any:
         return getattr(self.service, "stop_event", None)
 
     @property
@@ -280,7 +282,7 @@ class ApplicationRuntime:
             listen_addrs=listen_addrs,
         )
 
-    def config_snapshot(self) -> dict:
+    def config_snapshot(self) -> dict[str, Any]:
         service = self.service
         return {
             "nickname": getattr(service, "nickname", ""),
@@ -302,10 +304,10 @@ class ApplicationRuntime:
     # ------------------------------------------------------------------ #
     #  Events
     # ------------------------------------------------------------------ #
-    def subscribe(self, types=None, maxsize=None):
+    def subscribe(self, types: Any = None, maxsize: Any = None) -> Any:
         return self.events.subscribe(types=types, maxsize=maxsize)
 
-    def unsubscribe(self, subscription) -> None:
+    def unsubscribe(self, subscription: Any) -> None:
         self.events.unsubscribe(subscription)
 
     def publish(self, event: Event) -> None:

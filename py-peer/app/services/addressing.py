@@ -11,7 +11,7 @@ import errno
 import ipaddress
 import logging
 import socket
-from typing import List
+from typing import Any, List
 
 import multiaddr
 
@@ -37,7 +37,7 @@ UNSUPPORTED_LISTEN_PROTOCOLS = (
 class AddressService:
     """Resolve, validate, rewrite, and snapshot peer addresses."""
 
-    def __init__(self, engine):
+    def __init__(self, engine: Any) -> None:
         self._engine = engine
 
     # ------------------------------------------------------------------ #
@@ -95,7 +95,7 @@ class AddressService:
             resolved.append(addr)
         return resolved
 
-    def make_addrs_factory(self):
+    def make_addrs_factory(self) -> Any:
         """Return an AddrsFactory that never advertises a wildcard address.
 
         The factory only rewrites wildcard listeners (the socket is bound on
@@ -116,7 +116,9 @@ class AddressService:
             )
         announce_is_v6 = ":" in host
 
-        def _factory(candidates):
+        def _factory(
+            candidates: list[multiaddr.Multiaddr],
+        ) -> list[multiaddr.Multiaddr]:
             advertised = []
             seen = set()
             for addr in candidates:
@@ -144,7 +146,9 @@ class AddressService:
     # ------------------------------------------------------------------ #
     #  Port probing and listener verification
     # ------------------------------------------------------------------ #
-    def warn_if_port_in_use(self, listen_addrs) -> None:
+    def warn_if_port_in_use(
+        self, listen_addrs: list[multiaddr.Multiaddr]
+    ) -> None:
         """Warn when a listen port is already taken by another process.
 
         py-libp2p enables SO_REUSEPORT (for DCUtR hole punching), so a second
@@ -201,7 +205,9 @@ class AddressService:
                 probe.close()
 
     @staticmethod
-    def addr_match_key(addr):
+    def addr_match_key(
+        addr: multiaddr.Multiaddr,
+    ) -> tuple[str | None, str | None, int | None]:
         """Normalize a multiaddr for listener comparison.
 
         A requested port of 0 means "ephemeral"; it is represented as ``None``
@@ -219,7 +225,9 @@ class AddressService:
                 break
         return (family, host, None if port == 0 else port)
 
-    def verify_listeners(self, host, requested) -> None:
+    def verify_listeners(
+        self, host: Any, requested: list[multiaddr.Multiaddr]
+    ) -> None:
         """Verify that every requested listener actually bound."""
         bound = [str(addr) for addr in host.get_transport_addrs()]
         self._engine.transport_addrs = bound
@@ -247,7 +255,7 @@ class AddressService:
     #  Advertisement
     # ------------------------------------------------------------------ #
     @staticmethod
-    def is_wildcard_addr(addr) -> bool:
+    def is_wildcard_addr(addr: multiaddr.Multiaddr) -> bool:
         """True when a multiaddr binds a wildcard host (0.0.0.0 / ::)."""
         protocols = {p.name for p in addr.protocols()}
         if "ip4" in protocols:
@@ -280,7 +288,7 @@ class AddressService:
             return "private/LAN (reachable only on that network)"
         return "public/unknown (reachability not verified)"
 
-    def refresh_advertised_addrs(self, host) -> None:
+    def refresh_advertised_addrs(self, host: Any) -> None:
         """Snapshot and log host.get_addrs() after listeners are ready."""
         advertised = [str(addr) for addr in host.get_addrs()]
         self._engine.full_multiaddrs = advertised

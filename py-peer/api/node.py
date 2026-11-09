@@ -12,7 +12,7 @@ from .base import BaseHandler
 class NodeInfoHandler(BaseHandler):
     """GET /api/v1/node/info"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         info = self.peer_service.connection_info()
@@ -31,7 +31,7 @@ class NodeInfoHandler(BaseHandler):
 class NodeStatusHandler(BaseHandler):
     """GET /api/v1/node/status"""
 
-    def get(self):
+    def get(self) -> None:
         status = self.runtime.status()
         self.send_success({
             "ready": status.ready,
@@ -47,7 +47,7 @@ class NodeStatusHandler(BaseHandler):
 class NodeMultiaddrHandler(BaseHandler):
     """GET /api/v1/node/multiaddr"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         multiaddrs = self.peer_service.advertised_addrs()

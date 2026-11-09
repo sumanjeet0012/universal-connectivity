@@ -27,6 +27,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from typing import Mapping
 
 from platformdirs import user_data_dir
@@ -153,7 +154,7 @@ class DataPaths:
             _probe(directory)
         return self
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "root": str(self.root),
             "source": self.source,
@@ -165,7 +166,7 @@ class DataPaths:
         }
 
 
-def _as_text(value) -> str | None:
+def _as_text(value: Any) -> str | None:
     if value is None:
         return None
     return os.fspath(value)

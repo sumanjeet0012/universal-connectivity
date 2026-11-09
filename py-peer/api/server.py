@@ -17,6 +17,7 @@ Instantiate TornadoServer and call start():
 
 import logging
 import sys
+from typing import Any
 
 import tornado.ioloop
 import tornado.web
@@ -50,7 +51,9 @@ DEFAULT_API_HOST = "127.0.0.1"
 
 
 
-def _make_app(runtime, vectorstore=None) -> tornado.web.Application:
+def _make_app(
+    runtime: Any, vectorstore: Any = None
+) -> tornado.web.Application:
     """Build and return the Tornado Application with all routes."""
 
     kw = dict(runtime=runtime)   # kwargs passed to every handler's initialize()
@@ -144,7 +147,12 @@ class TornadoServer:
         unauthenticated; pass ``0.0.0.0`` only behind a trusted boundary.
     """
 
-    def __init__(self, runtime, port: int = DEFAULT_API_PORT, host: str = DEFAULT_API_HOST):
+    def __init__(
+        self,
+        runtime: Any,
+        port: int = DEFAULT_API_PORT,
+        host: str = DEFAULT_API_HOST,
+    ) -> None:
         from .base import as_runtime
 
         self.runtime = as_runtime(runtime)
@@ -159,18 +167,18 @@ class TornadoServer:
         vectorstore = load_vectorstore()
         self._app = _make_app(self.runtime, vectorstore=vectorstore)
 
-    def _on_service_stopped(self):
+    def _on_service_stopped(self) -> None:
         """Shut the API down once the headless service has stopped."""
         try:
             self._ioloop.add_callback(self._ioloop.stop)
         except Exception:
             logger.exception("Failed to stop the Tornado IOLoop")
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the IOLoop. Safe to call from any thread (e.g. a signal handler)."""
         self._ioloop.add_callback(self._ioloop.stop)
 
-    def start(self):
+    def start(self) -> None:
         """Start Tornado — blocks until the process is killed."""
         self._app.listen(self.port, address=self.host)
         logger.info(f"🌪  Tornado API server started on http://{self.host}:{self.port}")
@@ -189,7 +197,7 @@ class TornadoServer:
             self._ioloop.stop()
 
 
-def _print_routes(port=DEFAULT_API_PORT):
+def _print_routes(port: int = DEFAULT_API_PORT) -> None:
     """Pretty-print all available API routes."""
     routes = [
         ("GET",    f"/api/v1/node/info",               "Node info (peer_id, multiaddr, nickname)"),

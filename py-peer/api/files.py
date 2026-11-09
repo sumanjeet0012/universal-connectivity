@@ -23,7 +23,7 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 class SharedFilesHandler(BaseHandler):
     """GET /api/v1/files/shared"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         files = self.file_service.shared_files()
@@ -33,7 +33,7 @@ class SharedFilesHandler(BaseHandler):
 class SharedFileDetailHandler(BaseHandler):
     """GET /api/v1/files/shared/{cid}"""
 
-    def get(self, cid):
+    def get(self, cid: str) -> None:
         if not self.require_ready():
             return
         self.send_success(self.file_service.shared_file(cid))
@@ -42,7 +42,7 @@ class SharedFileDetailHandler(BaseHandler):
 class ShareFileHandler(BaseHandler):
     """POST /api/v1/files/share — share a file that already exists on disk"""
 
-    def post(self):
+    def post(self) -> None:
         if not self.require_ready():
             return
         body = self.get_json_body()
@@ -63,7 +63,7 @@ class ShareFileHandler(BaseHandler):
 class DownloadFileHandler(BaseHandler):
     """POST /api/v1/files/download — download a file by CID hex"""
 
-    def post(self):
+    def post(self) -> None:
         if not self.require_ready():
             return
         body = self.get_json_body()
@@ -85,7 +85,7 @@ class UploadAndShareHandler(BaseHandler):
     Saves the file to the service's download_dir and queues a share.
     """
 
-    async def post(self):
+    async def post(self) -> None:
         if not self.require_ready():
             return
 
@@ -119,9 +119,10 @@ class UploadAndShareHandler(BaseHandler):
         # every API/WebSocket client on the single Tornado IOLoop thread. The
         # service sanitises the attacker-controlled multipart filename.
         stored = await asyncio.to_thread(
-            self.file_service.store_upload,
-            file_info["filename"],
-            file_data,
+            lambda: self.file_service.store_upload(
+                file_info["filename"],
+                file_data,
+            )
         )
         self.file_service.share_local_file(stored["path"], topic)
         self.send_success(

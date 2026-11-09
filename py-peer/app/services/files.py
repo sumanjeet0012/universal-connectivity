@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from queue import Empty, Full
+from typing import Any
 
 import trio
 
@@ -36,14 +37,14 @@ def _write_bytes(path: str, data: bytes) -> None:
 class FileService:
     """Share and download files; owns the shared-file registry."""
 
-    def __init__(self, engine, notifications=None):
+    def __init__(self, engine: Any, notifications: Any = None) -> None:
         self._engine = engine
         self._notifications = notifications
-        self._shared: dict[str, dict] = {}
+        self._shared: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
     @property
-    def engine(self):
+    def engine(self) -> Any:
         return self._engine
 
     @property
@@ -53,11 +54,11 @@ class FileService:
     # ------------------------------------------------------------------ #
     #  Shared-file registry
     # ------------------------------------------------------------------ #
-    def mark_shared(self, cid: str, metadata: dict) -> None:
+    def mark_shared(self, cid: str, metadata: dict[str, Any]) -> None:
         with self._lock:
             self._shared[cid] = metadata
 
-    def shared_files(self) -> list[dict]:
+    def shared_files(self) -> list[dict[str, Any]]:
         """Snapshot shared-file metadata without exposing local paths."""
         with self._lock:
             return [
@@ -69,13 +70,13 @@ class FileService:
                 for cid, meta in self._shared.items()
             ]
 
-    def shared_file(self, cid: str) -> dict:
+    def shared_file(self, cid: str) -> dict[str, Any]:
         meta = self.shared_file_raw(cid)
         if not meta:
             raise NotFoundError(f"No shared file with CID '{cid}'.")
         return meta
 
-    def shared_file_raw(self, cid: str):
+    def shared_file_raw(self, cid: str) -> dict[str, Any] | None:
         """Return one serialized shared-file entry, or None."""
         with self._lock:
             meta = self._shared.get(cid)
@@ -96,7 +97,7 @@ class FileService:
         topic: str,
         *,
         allow_outside_download_dir: bool = False,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Queue a share for a file that already exists on disk.
 
         Remote/HTTP callers must not be able to publish arbitrary host files, so
@@ -135,7 +136,9 @@ class FileService:
             "topic": topic,
         }
 
-    def download(self, cid: str, file_name: str = "unknown") -> dict:
+    def download(
+        self, cid: str, file_name: str = "unknown"
+    ) -> dict[str, Any]:
         if not getattr(self._engine, "ready", False):
             raise NotReadyError("Service not ready — cannot queue a download.")
         if not isinstance(cid, str) or not cid.strip():
@@ -159,7 +162,7 @@ class FileService:
             "file_name": name,
         }
 
-    def store_upload(self, filename: str, data: bytes) -> dict:
+    def store_upload(self, filename: str, data: bytes) -> dict[str, Any]:
         """Persist uploaded bytes inside the download directory."""
         if not getattr(self._engine, "ready", False):
             raise NotReadyError("Service not ready — cannot store an upload.")
@@ -462,6 +465,6 @@ class FileService:
         if self._notifications is not None:
             await self._notifications.system(message)
 
-    def _message(self, payload: dict) -> None:
+    def _message(self, payload: dict[str, Any]) -> None:
         if self._notifications is not None:
             self._notifications.message(payload)

@@ -7,6 +7,8 @@ database written by a newer build is refused instead of being corrupted.
 
 from __future__ import annotations
 
+import sqlite3
+
 from ..errors import StorageError
 
 SCHEMA_VERSION = 1
@@ -47,14 +49,14 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 
-def _migration_1(connection) -> None:
+def _migration_1(connection: sqlite3.Connection) -> None:
     connection.executescript(_MIGRATION_1)
 
 
 MIGRATIONS = {1: _migration_1}
 
 
-def migrate(connection) -> int:
+def migrate(connection: sqlite3.Connection) -> int:
     """Apply pending migrations and return the resulting schema version."""
     current = connection.execute("PRAGMA user_version").fetchone()[0]
     if current > SCHEMA_VERSION:

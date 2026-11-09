@@ -7,6 +7,8 @@ engine holds transport primitives only; application behaviour lives here.
 
 from __future__ import annotations
 
+from typing import Any
+
 from .addressing import AddressService
 from .connection import ConnectionService
 from .discovery import DiscoveryService
@@ -21,7 +23,9 @@ from .storage import StorageService
 class ServiceBundle:
     """One instance of every application service for a single engine."""
 
-    def __init__(self, engine, store=None, event_bus=None):
+    def __init__(
+        self, engine: Any, store: Any = None, event_bus: Any = None
+    ) -> None:
         self.engine = engine
         if event_bus is not None:
             engine.event_bus = event_bus
@@ -58,7 +62,7 @@ class ServiceBundle:
     # ------------------------------------------------------------------ #
     #  Wiring
     # ------------------------------------------------------------------ #
-    def bind_store(self, store) -> None:
+    def bind_store(self, store: Any) -> None:
         """Point storage at a store injected after construction."""
         self.storage.bind_store(store)
 
@@ -71,7 +75,7 @@ class ServiceBundle:
         await self.messaging.stop_chat_room()
         self.notifications.close()
 
-    def start_workers(self, nursery) -> None:
+    def start_workers(self, nursery: Any) -> None:
         """Start every long-running service loop in the engine's nursery."""
         nursery.start_soon(self.messaging.process_incoming)
         nursery.start_soon(self.messaging.process_outgoing)

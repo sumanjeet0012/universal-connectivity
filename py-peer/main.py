@@ -14,6 +14,8 @@ import time
 import traceback
 import trio
 import threading
+from collections.abc import Callable
+from typing import Any
 
 from dotenv import load_dotenv
 load_dotenv()  # loads .env from cwd (py-peer/)
@@ -21,7 +23,7 @@ load_dotenv()  # loads .env from cwd (py-peer/)
 from core.headless import HeadlessService
 from app import ApplicationError, ApplicationRuntime, RuntimeConfig
 
-def build_runtime(args) -> ApplicationRuntime:
+def build_runtime(args: argparse.Namespace) -> ApplicationRuntime:
     """Create the single runtime that owns the peer for this process."""
     runtime = ApplicationRuntime(RuntimeConfig.from_namespace(args))
     paths = getattr(runtime, "paths", None)
@@ -33,9 +35,9 @@ def build_runtime(args) -> ApplicationRuntime:
     return runtime
 
 # Configure logging
-def setup_logging(ui_mode=False):
+def setup_logging(ui_mode: bool = False) -> None:
     """Setup logging configuration based on whether UI is active."""
-    handlers = []
+    handlers: list[logging.Handler] = []
     
     # Only add console handler if not in UI mode
     if not ui_mode:
@@ -63,9 +65,11 @@ logging.getLogger("libp2p.pubsub").setLevel(logging.DEBUG)
 logging.getLogger("libp2p.discovery").setLevel(logging.DEBUG)
 logging.getLogger("libp2p.kad_dht").setLevel(logging.DEBUG)
 
-def run_headless_in_thread(headless_service, ready_event):
+def run_headless_in_thread(
+    headless_service: Any, ready_event: Any
+) -> threading.Thread:
     """Run headless service in a separate thread."""
-    def run_service():
+    def run_service() -> None:
         try:
             trio.run(headless_service.start)
         except Exception as e:
@@ -80,7 +84,7 @@ def run_headless_in_thread(headless_service, ready_event):
     # reports a fatal startup failure: otherwise a bad port/seed/announce
     # address makes the process sit idle for the full 30 seconds.
     max_wait = 30  # Maximum wait time in seconds
-    waited = 0
+    waited = 0.0
     while (
         not headless_service.ready
         and not getattr(headless_service, "failed", False)
@@ -98,7 +102,11 @@ def run_headless_in_thread(headless_service, ready_event):
     return thread
 
 
-def stop_headless_and_join(headless_service, thread, timeout=10.0):
+def stop_headless_and_join(
+    headless_service: Any,
+    thread: threading.Thread | None,
+    timeout: float = 10.0,
+) -> None:
     """Request shutdown and wait for the trio thread to finish cleanup.
 
     UI modes and the API adapter run the service on a daemon thread. Without
@@ -123,16 +131,19 @@ def stop_headless_and_join(headless_service, thread, timeout=10.0):
         )
 
 
-def install_shutdown_signal_handlers(headless_service, on_signal=None):
+def install_shutdown_signal_handlers(
+    headless_service: Any,
+    on_signal: Callable[[], Any] | None = None,
+) -> dict[int, Any]:
     """Map SIGINT/SIGTERM to a graceful stop request.
 
     Must run on the main thread. Returns the handlers that were replaced so
     the caller can restore them. ``on_signal`` runs after ``request_stop()``
     and is used by API mode to wake the Tornado IOLoop immediately.
     """
-    previous = {}
+    previous: dict[int, Any] = {}
 
-    def _handler(signum, frame):
+    def _handler(signum: int, frame: Any) -> None:
         logger.info(
             f"Received signal {signum}; requesting graceful shutdown..."
         )
@@ -152,7 +163,7 @@ def install_shutdown_signal_handlers(headless_service, on_signal=None):
     return previous
 
 
-def restore_signal_handlers(previous):
+def restore_signal_handlers(previous: dict[int, Any]) -> None:
     for sig, handler in previous.items():
         try:
             signal.signal(sig, handler)
@@ -160,7 +171,7 @@ def restore_signal_handlers(previous):
             pass
 
 
-async def main_async(args):
+async def main_async(args: argparse.Namespace) -> ApplicationRuntime | None:
     """Main async function."""
     logger.info("Starting Universal Connectivity Python Peer...")
 
@@ -201,7 +212,7 @@ async def main_async(args):
     return None
 
 
-async def run_simple_interactive(runtime):
+async def run_simple_interactive(runtime: ApplicationRuntime) -> None:
     """Run simple interactive mode."""
     connection_info = runtime.peer.connection_info().to_dict()
     
@@ -219,7 +230,7 @@ async def run_simple_interactive(runtime):
         nursery.start_soon(handle_user_input, runtime)
 
 
-async def monitor_runtime_events(runtime):
+async def monitor_runtime_events(runtime: ApplicationRuntime) -> None:
     """Print incoming messages and system events from the runtime EventBus.
 
     The event bus is the single non-blocking source for every adapter. The
@@ -249,7 +260,7 @@ async def monitor_runtime_events(runtime):
             logger.debug("Error closing CLI event subscription", exc_info=True)
 
 
-def _print_runtime_event(event) -> None:
+def _print_runtime_event(event: Any) -> None:
     from app.events import EventType
 
     data = event.data or {}
@@ -266,7 +277,7 @@ def _print_runtime_event(event) -> None:
             print(f"📡 {data.get('message', '')}")
 
 
-async def handle_user_input(runtime):
+async def handle_user_input(runtime: ApplicationRuntime) -> None:
     """Handle user input in interactive mode."""
     try:
         while True:
@@ -326,7 +337,7 @@ async def handle_user_input(runtime):
     runtime.request_stop()
 
 
-def main():
+def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Universal Connectivity Python Peer")
     

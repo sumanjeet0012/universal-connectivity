@@ -1,0 +1,56 @@
+name: py-peer typecheck
+
+on:
+  pull_request:
+    paths:
+      - "py-peer/**"
+      - ".github/workflows/py-peer-typecheck.yml"
+  push:
+    paths:
+      - "py-peer/**"
+      - ".github/workflows/py-peer-typecheck.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: py-peer
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ">=0.13.4"
+
+      - name: Install project and type checkers
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv pip install -r requirements-dev.txt
+          uv pip install -e .
+
+      - name: Run mypy
+        run: |
+          source .venv/bin/activate
+          mypy
+
+      - name: Run pyrefly
+        run: |
+          source .venv/bin/activate
+          pyrefly check

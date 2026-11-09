@@ -15,6 +15,7 @@ import logging
 import os
 import sqlite3
 import threading
+from typing import Any
 
 from ..errors import StorageError
 from .messages import (
@@ -61,7 +62,7 @@ class MemoryStore:
     backend = "memory"
     durable = False
 
-    def __init__(self, retention: int = DEFAULT_RETENTION):
+    def __init__(self, retention: int = DEFAULT_RETENTION) -> None:
         self.messages = InMemoryMessageStore(retention)
         self.peers = MemoryPeerRepository()
         self.settings = MemorySettingsRepository()
@@ -72,10 +73,12 @@ class MemoryStore:
         return self.messages.retention
 
     # --- message repository delegation --------------------------------
-    def append(self, message: dict, keep: int | None = None) -> bool:
+    def append(self, message: dict[str, Any], keep: int | None = None) -> bool:
         return self.messages.append(message, keep=keep)
 
-    def page(self, topic: str, limit: int = 100, offset: int = 0):
+    def page(
+        self, topic: str, limit: int = 100, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
         return self.messages.page(topic, limit=limit, offset=offset)
 
     def unread_count(self, topic: str) -> int:
@@ -84,7 +87,7 @@ class MemoryStore:
     def mark_read(self, topic: str) -> int:
         return self.messages.mark_read(topic)
 
-    def stats(self, topic: str) -> dict:
+    def stats(self, topic: str) -> dict[str, Any]:
         return self.messages.stats(topic)
 
     def count(self) -> int:
@@ -93,7 +96,7 @@ class MemoryStore:
     def close(self) -> None:
         self.messages.close()
 
-    def health(self) -> dict:
+    def health(self) -> dict[str, Any]:
         return {
             **self.messages.health(),
             "peer_records": self.peers.count(),
@@ -113,7 +116,7 @@ class SqliteStore:
     backend = "sqlite"
     durable = True
 
-    def __init__(self, path: str, retention: int = DEFAULT_RETENTION):
+    def __init__(self, path: str, retention: int = DEFAULT_RETENTION) -> None:
         self.path = os.fspath(path)
         self._lock = threading.RLock()
         self._closed = False
@@ -158,10 +161,12 @@ class SqliteStore:
         return self.messages.retention
 
     # --- message repository delegation --------------------------------
-    def append(self, message: dict, keep: int | None = None) -> bool:
+    def append(self, message: dict[str, Any], keep: int | None = None) -> bool:
         return self.messages.append(message, keep=keep)
 
-    def page(self, topic: str, limit: int = 100, offset: int = 0):
+    def page(
+        self, topic: str, limit: int = 100, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
         return self.messages.page(topic, limit=limit, offset=offset)
 
     def unread_count(self, topic: str) -> int:
@@ -170,7 +175,7 @@ class SqliteStore:
     def mark_read(self, topic: str) -> int:
         return self.messages.mark_read(topic)
 
-    def stats(self, topic: str) -> dict:
+    def stats(self, topic: str) -> dict[str, Any]:
         return self.messages.stats(topic)
 
     def count(self) -> int:
@@ -187,7 +192,7 @@ class SqliteStore:
             except sqlite3.Error:  # pragma: no cover - shutdown race
                 logger.debug("Storage connection close failed", exc_info=True)
 
-    def health(self) -> dict:
+    def health(self) -> dict[str, Any]:
         with self._lock:
             if self._closed:
                 return {
@@ -204,7 +209,9 @@ class SqliteStore:
         }
 
 
-def open_store(path: str | None = None, retention: int = DEFAULT_RETENTION):
+def open_store(
+    path: str | None = None, retention: int = DEFAULT_RETENTION
+) -> MemoryStore | SqliteStore:
     """Return a durable store when ``path`` is given, else an in-memory one."""
     if path:
         return SqliteStore(path, retention=retention)

@@ -14,7 +14,7 @@ from .base import BaseHandler, parse_string_field
 class SendDefaultMessageHandler(BaseHandler):
     """POST /api/v1/messages — sends to the node's default chat topic"""
 
-    def post(self):
+    def post(self) -> None:
         if not self.require_ready():
             return
         body = self.get_json_body()
@@ -33,20 +33,20 @@ class TopicMessagesHandler(BaseHandler):
     POST /api/v1/messages/{topic}  — send a message to this topic
     """
 
-    def get(self, topic):
+    def get(self, topic: str) -> None:
         if not self.require_ready():
             return
         if not self.require_topic(topic):
             return
         try:
-            limit = int(self.get_argument("limit", 100))
-            offset = int(self.get_argument("offset", 0))
+            limit = int(self.get_argument("limit", "100"))
+            offset = int(self.get_argument("offset", "0"))
         except ValueError:
             self.send_error_response("'limit' and 'offset' must be integers.")
             return
         self.send_success(self.storage_service.history(topic, limit=limit, offset=offset))
 
-    def post(self, topic):
+    def post(self, topic: str) -> None:
         if not self.require_ready():
             return
         body = self.get_json_body()
@@ -64,7 +64,7 @@ class TopicMessagesHandler(BaseHandler):
 class TopicUnreadHandler(BaseHandler):
     """GET /api/v1/messages/{topic}/unread"""
 
-    def get(self, topic):
+    def get(self, topic: str) -> None:
         if not self.require_ready():
             return
         if not self.require_topic(topic):
@@ -76,7 +76,7 @@ class TopicUnreadHandler(BaseHandler):
 class TopicMarkReadHandler(BaseHandler):
     """PUT /api/v1/messages/{topic}/read"""
 
-    def put(self, topic):
+    def put(self, topic: str) -> None:
         if not self.require_ready():
             return
         if not self.require_topic(topic):

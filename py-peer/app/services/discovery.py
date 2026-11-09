@@ -11,8 +11,10 @@ from __future__ import annotations
 import logging
 import time
 from queue import Empty, Full
+from typing import Any
 
 import trio
+from libp2p.kad_dht.kad_dht import KadDHT
 
 from ..chatroom import MAX_TOPIC_NAME_LENGTH, MAX_TOPICS, NON_CHAT_TOPICS
 
@@ -33,12 +35,12 @@ class DiscoveryService:
 
     def __init__(
         self,
-        engine,
-        storage=None,
-        messaging=None,
-        notifications=None,
-        connections=None,
-    ):
+        engine: Any,
+        storage: Any = None,
+        messaging: Any = None,
+        notifications: Any = None,
+        connections: Any = None,
+    ) -> None:
         self._engine = engine
         self._storage = storage
         self._messaging = messaging
@@ -46,7 +48,7 @@ class DiscoveryService:
         self._connections = connections
 
     @property
-    def engine(self):
+    def engine(self) -> Any:
         return self._engine
 
     # ------------------------------------------------------------------ #
@@ -58,18 +60,18 @@ class DiscoveryService:
         chat_room = getattr(self._engine, "chat_room", None)
         return set(chat_room.get_subscribed_topics()) if chat_room else set()
 
-    def topics(self) -> dict:
+    def topics(self) -> dict[str, Any]:
         if self._storage is not None:
             return self._storage.topics()
         return self._engine.get_all_topics_with_info()
 
-    def topic_info(self, topic: str) -> dict:
+    def topic_info(self, topic: str) -> dict[str, Any]:
         topics = self.topics()
         if topic not in topics:
             raise NotFoundError(f"Topic '{topic}' not found or not subscribed.")
         return {"topic": topic, **topics[topic]}
 
-    def subscribe(self, topic: str) -> dict:
+    def subscribe(self, topic: str) -> dict[str, Any]:
         """Queue a subscription request after enforcing app-level limits."""
         if not getattr(self._engine, "ready", False):
             raise NotReadyError("Service not ready — cannot queue a subscription.")
@@ -191,7 +193,7 @@ class DiscoveryService:
     # ------------------------------------------------------------------ #
     #  PubSub snapshots
     # ------------------------------------------------------------------ #
-    def mesh(self) -> dict:
+    def mesh(self) -> dict[str, list[str]]:
         """Snapshot GossipSub mesh, retrying on concurrent modification."""
         gossipsub = getattr(self._engine, "gossipsub", None)
         if not gossipsub:
@@ -210,7 +212,7 @@ class DiscoveryService:
     def mesh_peers(self, topic: str) -> list[str]:
         return list(self.mesh().get(topic, []))
 
-    def fanout(self) -> dict:
+    def fanout(self) -> dict[str, list[str]]:
         """Snapshot GossipSub fanout, retrying on concurrent modification."""
         gossipsub = getattr(self._engine, "gossipsub", None)
         if not gossipsub:
@@ -246,7 +248,7 @@ class DiscoveryService:
             return []
         return sorted(chat_room.get_all_subscriptions())
 
-    def gossipsub_config(self) -> dict:
+    def gossipsub_config(self) -> dict[str, Any]:
         gossipsub = self._engine.gossipsub
         return {
             "degree": getattr(gossipsub, "degree", None),
@@ -264,20 +266,20 @@ class DiscoveryService:
     # ------------------------------------------------------------------ #
     #  DHT
     # ------------------------------------------------------------------ #
-    def _require_dht(self):
+    def _require_dht(self) -> KadDHT:
         dht = getattr(self._engine, "dht", None)
         if not dht:
             raise NotReadyError("DHT is not initialised.")
         return dht
 
-    def dht_status(self) -> dict:
+    def dht_status(self) -> dict[str, Any]:
         dht = self._require_dht()
         try:
             routing_table_size = len(list(dht.routing_table.get_peer_ids()))
         except Exception:
             routing_table_size = -1
         mode_val = getattr(dht, "mode", None)
-        mode_str = mode_val.name if hasattr(mode_val, "name") else str(mode_val)
+        mode_str = str(getattr(mode_val, "name", mode_val))
         return {
             "mode": mode_str,
             "random_walk_enabled": getattr(dht, "enable_random_walk", False),
@@ -291,7 +293,7 @@ class DiscoveryService:
         except Exception as exc:  # pragma: no cover - library failure path
             raise OperationError(f"Could not read routing table: {exc}") from exc
 
-    def bootstrap(self) -> dict:
+    def bootstrap(self) -> dict[str, Any]:
         """Re-trigger bootstrap dials. Returns queued/total counts."""
         queued = 0
         for addr in BOOTSTRAP_PEERS:

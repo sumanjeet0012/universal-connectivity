@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from queue import Empty, Full
+from typing import Any
 
 import trio
 
@@ -30,18 +31,24 @@ logger = logging.getLogger("app.services.messaging")
 class MessagingService:
     """Own the chat room, inbound storage, and outbound publish queue."""
 
-    def __init__(self, engine, storage, notifications=None, identity=None):
+    def __init__(
+        self,
+        engine: Any,
+        storage: Any,
+        notifications: Any = None,
+        identity: Any = None,
+    ) -> None:
         self._engine = engine
         self._storage = storage
         self._notifications = notifications
         self._identity = identity
 
     @property
-    def engine(self):
+    def engine(self) -> Any:
         return self._engine
 
     @property
-    def storage(self):
+    def storage(self) -> Any:
         return self._storage
 
     # ------------------------------------------------------------------ #
@@ -79,7 +86,9 @@ class MessagingService:
         if not self.enqueue_to_topic(topic, text):
             raise OperationError("Failed to queue message.")
 
-    def history(self, topic: str, limit: int = 100, offset: int = 0) -> dict:
+    def history(
+        self, topic: str, limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
         return self._storage.history(topic, limit=limit, offset=offset)
 
     def unread_count(self, topic: str) -> int:
@@ -203,6 +212,7 @@ class MessagingService:
                 engine.host.get_id()
             )
             is_file_message = message.message.startswith(FILE_MESSAGE_PREFIX)
+            message_data: dict[str, Any]
 
             if is_file_message:
                 try:

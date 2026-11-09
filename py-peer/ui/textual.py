@@ -8,7 +8,7 @@ service layer; incoming events arrive on the runtime's ``EventBus``.
 
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal
@@ -17,7 +17,7 @@ from textual.reactive import reactive
 from textual.binding import Binding
 
 from app.errors import ApplicationError
-from app.events import EventType
+from app.events import Event, EventType
 
 logger = logging.getLogger("ui")
 
@@ -95,7 +95,12 @@ class ChatUI(App[None]):
     # Reactive attributes
     peer_count = reactive(0)
     
-    def __init__(self, runtime, message_queue=None, system_queue=None):
+    def __init__(
+        self,
+        runtime: Any,
+        message_queue: Any = None,
+        system_queue: Any = None,
+    ) -> None:
         super().__init__()
         self.runtime = runtime
         # Kept for queue access; operations go through the service layer.
@@ -209,7 +214,8 @@ class ChatUI(App[None]):
             return
             
         # Clear the input
-        self.message_input.clear()
+        if self.message_input is not None:
+            self.message_input.clear()
         
         # Handle commands
         if message.startswith("/"):
@@ -266,10 +272,11 @@ class ChatUI(App[None]):
         """Deliver queued application events to the UI (non-blocking)."""
         if not self.running:
             return
-        if self._subscription is not None:
+        subscription = self._subscription
+        if subscription is not None:
             try:
                 while True:
-                    event = self._subscription.get_nowait()
+                    event = subscription.get_nowait()
                     if event is None:
                         break
                     self._handle_event(event)
@@ -278,7 +285,7 @@ class ChatUI(App[None]):
             return
         self._drain_legacy_queues()
 
-    def _handle_event(self, event) -> None:
+    def _handle_event(self, event: Event) -> None:
         """Translate one runtime event into UI output."""
         data = event.data or {}
         if event.type == EventType.MESSAGE_RECEIVED:
@@ -364,32 +371,33 @@ class ChatUI(App[None]):
     
     def refresh_peers(self) -> None:
         """Refresh the peers list."""
-        if not self.peers_log:
+        peers_log = self.peers_log
+        if peers_log is None:
             return
         
         try:
             info = self.runtime.peer.connection_info().to_dict()
-            peers = info.get('connected_peers', set())
+            peers = [str(peer) for peer in info.get('connected_peers', [])]
             peer_count = len(peers)
             
             # Update reactive peer count
-            self.peer_count = peer_count
+            self.set_reactive(ChatUI.peer_count, peer_count)
             
             # Clear and update peers list
-            self.peers_log.clear()
-            self.peers_log.write_line(f"Connected: {peer_count}")
+            peers_log.clear()
+            peers_log.write_line(f"Connected: {peer_count}")
             
             if peers:
                 for peer in sorted(peers):
                     peer_short = peer[:8] if len(peer) > 8 else peer
-                    self.peers_log.write_line(f"  • {peer_short}...")
+                    peers_log.write_line(f"  • {peer_short}...")
             else:
-                self.peers_log.write_line("  (No peers connected)")
+                peers_log.write_line("  (No peers connected)")
                 
         except Exception as e:
             logger.error(f"Error refreshing peers: {e}")
     
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         """Handle quit action."""
         self.display_system_message("Goodbye!")
         self.running = False

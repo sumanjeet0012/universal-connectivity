@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import logging
+from typing import Any
 
 import trio
 
@@ -22,10 +23,14 @@ logger = logging.getLogger("app.services.storage")
 class StorageService:
     """Read/write view of retained application data."""
 
-    def __init__(self, engine, store=None, notifications=None):
+    def __init__(
+        self, engine: Any, store: Any = None, notifications: Any = None
+    ) -> None:
         self._engine = engine
         self._notifications = notifications
-        self._store = store or getattr(engine, "message_store", None)
+        self._store: Any = store
+        if self._store is None:
+            self._store = getattr(engine, "message_store", None)
         if self._store is None:
             raise ValueError(
                 "StorageService requires a message store "
@@ -33,11 +38,11 @@ class StorageService:
             )
 
     @property
-    def engine(self):
+    def engine(self) -> Any:
         return self._engine
 
     @property
-    def store(self):
+    def store(self) -> Any:
         return self._store
 
     @property
@@ -48,7 +53,7 @@ class StorageService:
     def durable(self) -> bool:
         return bool(getattr(self._store, "durable", False))
 
-    def bind_store(self, store) -> None:
+    def bind_store(self, store: Any) -> None:
         """Replace the backing store (used when a runtime injects one)."""
         self._store = store
         self._engine.message_store = store
@@ -56,7 +61,7 @@ class StorageService:
     # ------------------------------------------------------------------ #
     #  Writes
     # ------------------------------------------------------------------ #
-    async def append_message(self, message_data: dict) -> bool:
+    async def append_message(self, message_data: dict[str, Any]) -> bool:
         """Persist a message, keeping slow disk I/O off the networking loop.
 
         Durable stores run the repository call on a worker thread. A storage
@@ -89,7 +94,9 @@ class StorageService:
     # ------------------------------------------------------------------ #
     #  Reads
     # ------------------------------------------------------------------ #
-    def history(self, topic: str, limit: int = 100, offset: int = 0) -> dict:
+    def history(
+        self, topic: str, limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
         """Return a paginated slice of retained topic history."""
         if (
             not isinstance(limit, int)
@@ -110,14 +117,14 @@ class StorageService:
             "offset": offset,
         }
 
-    def topic_messages(self, topic: str) -> list[dict]:
+    def topic_messages(self, topic: str) -> list[dict[str, Any]]:
         """Return one topic's retained messages (bounded snapshot)."""
         messages, _total = self._store.page(
             topic, limit=min(MAX_TOPIC_MESSAGES, 1000), offset=0
         )
         return messages
 
-    def topics(self) -> dict:
+    def topics(self) -> dict[str, Any]:
         """Return stats for every subscribed topic."""
         chat_room = getattr(self._engine, "chat_room", None)
         if chat_room is None:
@@ -134,5 +141,5 @@ class StorageService:
         if marked:
             logger.debug(f"Marked {marked} messages in topic '{topic}' as read")
 
-    def health(self) -> dict:
+    def health(self) -> dict[str, Any]:
         return self._store.health()

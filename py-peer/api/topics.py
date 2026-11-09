@@ -7,11 +7,13 @@ GET    /api/v1/topics/{topic}/info - topic details (unread, total, last msg)
 GET    /api/v1/topics/{topic}/peers - peers in GossipSub mesh for topic
 """
 
+from typing import Any
+
 from .base import BaseHandler, parse_string_field
 from app.chatroom import MAX_TOPIC_NAME_LENGTH
 
 
-def _sanitize_last_message(info):
+def _sanitize_last_message(info: dict[str, Any]) -> dict[str, Any]:
     """Drop non-serialisable last_message values from legacy history entries."""
     if info.get("last_message") and not isinstance(info["last_message"], dict):
         info["last_message"] = None
@@ -21,7 +23,7 @@ def _sanitize_last_message(info):
 class TopicListHandler(BaseHandler):
     """GET /api/v1/topics — POST /api/v1/topics"""
 
-    def get(self):
+    def get(self) -> None:
         if not self.require_ready():
             return
         topics_info = self.discovery_service.topics()
@@ -29,7 +31,7 @@ class TopicListHandler(BaseHandler):
             _sanitize_last_message(info)
         self.send_success({"topics": topics_info, "count": len(topics_info)})
 
-    def post(self):
+    def post(self) -> None:
         if not self.require_ready():
             return
         body = self.get_json_body()
@@ -49,7 +51,7 @@ class TopicListHandler(BaseHandler):
 class TopicInfoHandler(BaseHandler):
     """GET /api/v1/topics/{topic}/info"""
 
-    def get(self, topic):
+    def get(self, topic: str) -> None:
         if not self.require_ready():
             return
         self.send_success(_sanitize_last_message(self.discovery_service.topic_info(topic)))
@@ -58,7 +60,7 @@ class TopicInfoHandler(BaseHandler):
 class TopicMeshPeersHandler(BaseHandler):
     """GET /api/v1/topics/{topic}/peers — peers in GossipSub mesh for topic"""
 
-    def get(self, topic):
+    def get(self, topic: str) -> None:
         if not self.require_ready():
             return
         if not self.require_topic(topic):
