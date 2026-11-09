@@ -78,9 +78,13 @@ RUN mkdir -p /data \
 
 USER uc
 
-# TCP only: the peer currently runs a TCP transport and the API is HTTP.
-# UDP is not exposed because QUIC/WebTransport are not enabled.
-EXPOSE 4001/tcp 8765/tcp
+# Multi-transport support (simultaneous TCP, WebSocket, QUIC, WebTransport, WebRTC):
+# - 4001/tcp: TCP and WebSocket (demultiplexed)
+# - 4001/udp: QUIC-v1
+# - 4002/udp: WebTransport
+# - 4003/udp: WebRTC-Direct
+# - 8765/tcp: HTTP/WebSocket API
+EXPOSE 4001/tcp 4001/udp 4002/udp 4003/udp 8765/tcp
 
 VOLUME ["/data"]
 

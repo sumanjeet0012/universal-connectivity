@@ -2,7 +2,7 @@
 
 A Python implementation of the Universal Connectivity peer-to-peer chat application using libp2p networking with multiple UI options, a Tornado API layer, and a React web frontend.
 
-This is the Python implementation of the [Universal Connectivity][UNIV_CONN] app showcasing the [Gossipsub][GOSSIPSUB] features of the core libp2p protocol as found in the [py-libp2p][PYLIBP2P] Python libp2p implementation. The implementation currently uses TCP.
+This is the Python implementation of the [Universal Connectivity][UNIV_CONN] app showcasing the [Gossipsub][GOSSIPSUB] features of the core libp2p protocol as found in the [py-libp2p][PYLIBP2P] Python libp2p implementation. The implementation supports simultaneous multi-transport (TCP, WebSocket, QUIC-v1, WebTransport, and WebRTC-Direct).
 
 ## 📋 Table of Contents
 
@@ -192,9 +192,14 @@ and `fastecdsa` ship native or platform-specific dependencies.
 | Windows 11 | Expected, not tested in this repository | TCP only; no native test, no service installer |
 | Android/iOS | Not supported | The former Kivy mobile path was removed |
 
-Only **TCP** is enabled. QUIC, WebSocket, WebRTC, and WebTransport listen
-addresses are rejected at startup. IPv4 and IPv6 loopback are supported; LAN use
-requires `--announce-host` and an open firewall port.
+Simultaneous multi-transport is enabled by default. `py-peer` listens across all 5 transports:
+- **TCP** (`/ip4/0.0.0.0/tcp/<port>`)
+- **WebSocket** (`/ip4/0.0.0.0/tcp/<port>/ws`, demultiplexed over the same TCP port)
+- **QUIC-v1** (`/ip4/0.0.0.0/udp/<port>/quic-v1`)
+- **WebTransport** (`/ip4/0.0.0.0/udp/<port+1>/quic-v1/webtransport`)
+- **WebRTC-Direct** (`/ip4/0.0.0.0/udp/<port+2>/webrtc-direct`)
+
+Both IPv4 and IPv6 loopback are supported; LAN use requires `--announce-host` and opening the corresponding TCP/UDP firewall ports.
 
 ## 🛠️ Installation
 
@@ -406,12 +411,14 @@ sudo chown -R 10001:10001 ./peer-data
 
 ### Ports and advertised addresses
 
-Only TCP is published. QUIC, WebTransport, and UDP are not enabled, so there
-is no UDP mapping to add.
+`py-peer` publishes both TCP and UDP ports for simultaneous multi-transport connectivity:
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| `4001` | TCP | libp2p peer transport |
+| `4001` | TCP | libp2p TCP & WebSocket (demultiplexed) |
+| `4001` | UDP | libp2p QUIC-v1 transport |
+| `4002` | UDP | libp2p WebTransport |
+| `4003` | UDP | libp2p WebRTC-Direct transport |
 | `8765` | TCP | REST + WebSocket API |
 
 Inside the container the listener binds `/ip4/0.0.0.0/tcp/4001`, but a
@@ -691,7 +698,7 @@ Compose values and any explicit CLI flags consistent, because a CLI flag inside
 | Setting | Default | Notes |
 |---|---|---|
 | Peer port | `4001` (`--port 0` is converted to `4001`) | Compose/Docker pass `4001` explicitly |
-| Listen addresses | `/ip4/0.0.0.0/tcp/<port>` | TCP only; unsupported transports fail startup |
+| Listen addresses | All 5 transports (TCP, WS, QUIC, WebTransport, WebRTC-Direct) | Default binds all transports; custom `--listen-addr` repeatable |
 | Advertised host | `127.0.0.1` | Same-machine only; set a dialable address for LAN/Docker |
 | API port | `8765` | |
 | API host | `127.0.0.1` | Unauthenticated; `0.0.0.0` is explicit opt-in |
@@ -704,7 +711,7 @@ Compose values and any explicit CLI flags consistent, because a CLI flag inside
 | Legacy UI queues | 64–1024 items | Bounded; non-blocking command queues |
 
 Configuration is validated before the runtime reports ready: invalid ports,
-malformed or non-TCP listen addresses, wildcard announce addresses, and
+malformed listen addresses, wildcard announce addresses, and
 unwritable data directories fail startup with a clear error. If you need a
 configuration file or different retention, it is not implemented yet rather
 than silently ignored.

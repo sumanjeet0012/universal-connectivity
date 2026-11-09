@@ -44,8 +44,11 @@ services:
       # API: loopback-only by default. To expose it, set
       # UC_API_PUBLISH_HOST=0.0.0.0 only behind an authenticating proxy/firewall.
       - "${UC_API_PUBLISH_HOST:-127.0.0.1}:${UC_API_PORT:-8765}:${UC_API_PORT:-8765}"
-      # Peer transport: TCP only. QUIC/WebTransport/UDP are not enabled.
+      # Peer transports: simultaneous TCP, WebSocket, QUIC-v1, WebTransport, WebRTC-Direct
       - "${UC_PEER_PORT:-4001}:${UC_PEER_PORT:-4001}/tcp"
+      - "${UC_PEER_PORT:-4001}:${UC_PEER_PORT:-4001}/udp"
+      - "4002:4002/udp"
+      - "4003:4003/udp"
 
     volumes:
       - uc-data:/data

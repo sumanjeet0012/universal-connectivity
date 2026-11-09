@@ -43,8 +43,7 @@ class ConnectionService:
             info_from_p2p_addr(multiaddr.Multiaddr(value))
         except Exception as exc:
             raise ValidationError(
-                "Invalid multiaddr — expected "
-                "/ip4/<host>/tcp/<port>/p2p/<peer-id>.",
+                "Invalid multiaddr — expected a valid libp2p address ending with /p2p/<peer-id>.",
                 detail=str(exc),
             ) from exc
         return value

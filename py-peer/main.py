@@ -379,8 +379,8 @@ def main() -> None:
         default=[],
         dest="listen_addrs",
         metavar="MULTIADDR",
-        help="Multiaddr to listen on (repeatable). Default: "
-             "/ip4/0.0.0.0/tcp/<port>"
+        help="Multiaddr to listen on (repeatable). Default: listens on "
+             "all supported transports (TCP, WS, QUIC, WebTransport, WebRTC-Direct)"
     )
     parser.add_argument(
         "--announce-addr",

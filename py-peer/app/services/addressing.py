@@ -17,21 +17,27 @@ import multiaddr
 
 logger = logging.getLogger("app.services.addressing")
 
-# Transports this build can actually construct. WebSocket is omitted because
-# the `websockets` dependency is not installed; WebRTC and WebTransport need
-# extra configuration (and `aiortc` for WebRTC). QUIC is intentionally
-# excluded: it works experimentally but changes the transport mix, so it is
-# rejected explicitly instead of being silently accepted without a registered
-# transport.
-UNSUPPORTED_LISTEN_PROTOCOLS = (
-    "quic",
-    "quic-v1",
+SUPPORTED_LISTEN_PROTOCOLS = {
+    "tcp",
+    "udp",
     "ws",
     "wss",
+    "quic",
+    "quic-v1",
+    "webtransport",
     "webrtc",
     "webrtc-direct",
-    "webtransport",
-)
+}
+
+
+def has_webrtc_support() -> bool:
+    """Return True if aiortc is available for WebRTC Direct transport."""
+    try:
+        import aiortc  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
 class AddressService:
@@ -44,10 +50,29 @@ class AddressService:
     #  Listen / announce resolution
     # ------------------------------------------------------------------ #
     def resolve_listen_addrs(self) -> List[multiaddr.Multiaddr]:
-        """Parse and validate the configured listen addresses."""
-        raw = self._engine.listen_addrs or [
-            f"/ip4/0.0.0.0/tcp/{self._engine.port}"
-        ]
+        """Parse and validate the configured listen addresses, or build defaults across all transports."""
+        base_port = self._engine.port
+        if self._engine.listen_addrs:
+            raw = self._engine.listen_addrs
+        elif base_port == 0:
+            raw = [
+                "/ip4/0.0.0.0/tcp/0",
+                "/ip4/0.0.0.0/tcp/0/ws",
+                "/ip4/0.0.0.0/udp/0/quic-v1",
+                "/ip4/0.0.0.0/udp/0/quic-v1/webtransport",
+            ]
+            if has_webrtc_support():
+                raw.append("/ip4/0.0.0.0/udp/0/webrtc-direct")
+        else:
+            raw = [
+                f"/ip4/0.0.0.0/tcp/{base_port}",
+                f"/ip4/0.0.0.0/tcp/{base_port}/ws",
+                f"/ip4/0.0.0.0/udp/{base_port}/quic-v1",
+                f"/ip4/0.0.0.0/udp/{base_port + 1}/quic-v1/webtransport",
+            ]
+            if has_webrtc_support():
+                raw.append(f"/ip4/0.0.0.0/udp/{base_port + 2}/webrtc-direct")
+
         resolved = []
         for item in raw:
             try:
@@ -55,18 +80,15 @@ class AddressService:
             except Exception as exc:
                 raise ValueError(f"Invalid listen address {item!r}: {exc}") from exc
             protocols = {p.name for p in addr.protocols()}
-            unsupported = [
-                p for p in UNSUPPORTED_LISTEN_PROTOCOLS if p in protocols
-            ]
+            if not (protocols & {"tcp", "udp"}):
+                raise ValueError(
+                    f"Unsupported listen address {item!r}: expected a TCP or UDP multiaddr"
+                )
+            unsupported = protocols - SUPPORTED_LISTEN_PROTOCOLS - {"ip4", "ip6", "p2p", "certhash"}
             if unsupported:
                 raise ValueError(
-                    f"Unsupported listen address {item!r}: transport "
-                    f"{unsupported[0]!r} is not enabled in this build "
-                    "(plain TCP only)"
-                )
-            if "tcp" not in protocols:
-                raise ValueError(
-                    f"Unsupported listen address {item!r}: expected a TCP multiaddr"
+                    f"Unsupported listen address {item!r}: protocol "
+                    f"{next(iter(unsupported))!r} is not supported"
                 )
             resolved.append(addr)
         return resolved
@@ -149,42 +171,44 @@ class AddressService:
     def warn_if_port_in_use(
         self, listen_addrs: list[multiaddr.Multiaddr]
     ) -> None:
-        """Warn when a listen port is already taken by another process.
-
-        py-libp2p enables SO_REUSEPORT (for DCUtR hole punching), so a second
-        peer can bind the same port without error. Inbound connections are then
-        delivered to whichever process the kernel picks, which surfaces as
-        "handshake failed when upgrading to secure connection" because a peer
-        with a different PeerID answers. A plain SO_REUSEADDR probe bind still
-        fails while a listener is active, so we can detect the situation and
-        tell the user to pick a different port.
-        """
+        """Warn when a listen port is already taken by another process."""
         probed = set()
         for addr in listen_addrs:
             protocols = {p.name for p in addr.protocols()}
-            if "tcp" not in protocols or "ip4" not in protocols:
+            if "ip4" not in protocols:
                 continue
             host = addr.value_for_protocol("ip4")
-            port = int(addr.value_for_protocol("tcp"))
-            bind_host = "0.0.0.0" if host == "0.0.0.0" else host
-            if (bind_host, port) in probed:
+            port = None
+            sock_type = socket.SOCK_STREAM
+            proto_name = "tcp"
+            if "tcp" in protocols:
+                port = int(addr.value_for_protocol("tcp"))
+                sock_type = socket.SOCK_STREAM
+                proto_name = "tcp"
+            elif "udp" in protocols:
+                port = int(addr.value_for_protocol("udp"))
+                sock_type = socket.SOCK_DGRAM
+                proto_name = "udp"
+            else:
                 continue
-            probed.add((bind_host, port))
+            if port == 0:
+                continue
+            bind_host = "0.0.0.0" if host == "0.0.0.0" else host
+            if (bind_host, proto_name, port) in probed:
+                continue
+            probed.add((bind_host, proto_name, port))
 
-            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe = socket.socket(socket.AF_INET, sock_type)
             try:
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind((bind_host, port))
             except OSError as exc:
                 if exc.errno == errno.EADDRINUSE:
                     logger.warning(
-                        "⚠️  Port %s on %s is already in use by another process. "
-                        "libp2p uses SO_REUSEPORT, so this peer will still bind, "
-                        "but incoming connections may be handled by the other "
-                        "process and fail with 'handshake failed when upgrading "
-                        "to secure connection'. Start each local peer with a "
-                        "distinct port, e.g. --port 4001 / --port 4002.",
+                        "⚠️  Port %s/%s on %s is already in use by another process. "
+                        "Start each local peer with distinct ports.",
                         port,
+                        proto_name,
                         bind_host,
                     )
                 elif exc.errno == errno.EADDRNOTAVAIL:
@@ -207,23 +231,38 @@ class AddressService:
     @staticmethod
     def addr_match_key(
         addr: multiaddr.Multiaddr,
-    ) -> tuple[str | None, str | None, int | None]:
-        """Normalize a multiaddr for listener comparison.
-
-        A requested port of 0 means "ephemeral"; it is represented as ``None``
-        so it matches whatever port the OS assigned.
-        """
+    ) -> tuple[str | None, str | None, str | None, int | None]:
+        """Normalize a multiaddr for listener comparison."""
         protocols = {p.name for p in addr.protocols()}
         family = (
             "ip4" if "ip4" in protocols else "ip6" if "ip6" in protocols else None
         )
         host = addr.value_for_protocol(family) if family else None
+        transport_proto = (
+            "webrtc-direct"
+            if "webrtc-direct" in protocols
+            else "webtransport"
+            if "webtransport" in protocols
+            else "quic-v1"
+            if "quic-v1" in protocols
+            else "quic"
+            if "quic" in protocols
+            else "ws"
+            if "ws" in protocols
+            else "wss"
+            if "wss" in protocols
+            else "tcp"
+            if "tcp" in protocols
+            else "udp"
+            if "udp" in protocols
+            else None
+        )
         port = None
         for proto in ("tcp", "udp"):
             if proto in protocols:
                 port = int(addr.value_for_protocol(proto))
                 break
-        return (family, host, None if port == 0 else port)
+        return (family, host, transport_proto, None if port == 0 else port)
 
     def verify_listeners(
         self, host: Any, requested: list[multiaddr.Multiaddr]
@@ -236,12 +275,13 @@ class AddressService:
         bound_keys = [self.addr_match_key(multiaddr.Multiaddr(item)) for item in bound]
         missing = []
         for req in requested:
-            family, hostname, port = self.addr_match_key(req)
+            family, hostname, proto, port = self.addr_match_key(req)
             matched = any(
                 b_family == family
-                and b_host == hostname
+                and b_proto == proto
+                and (b_host == hostname or hostname in ("0.0.0.0", "::"))
                 and (port is None or b_port == port)
-                for b_family, b_host, b_port in bound_keys
+                for b_family, b_host, b_proto, b_port in bound_keys
             )
             if not matched:
                 missing.append(str(req))

@@ -16,7 +16,6 @@ from typing import Any, Callable, Dict, List, Set
 
 import janus
 import trio
-import trio_asyncio
 from libp2p import new_host, IHost
 from libp2p.bitswap import BitswapClient, MemoryBlockStore
 from libp2p.bitswap.dag import MerkleDag
@@ -75,13 +74,23 @@ __all__ = [
 
 
 def filter_compatible_peer_info(peer_info: PeerInfo) -> bool:
-    """Filter peer info to check if it has compatible addresses (TCP + IPv4)."""
+    """Filter peer info to check if it has compatible addresses across supported transports."""
     if not hasattr(peer_info, "addrs") or not peer_info.addrs:
         return False
 
+    supported_markers = (
+        "/tcp/",
+        "/ws",
+        "/wss",
+        "/quic",
+        "/quic-v1",
+        "/webtransport",
+        "/webrtc",
+        "/webrtc-direct",
+    )
     for addr in peer_info.addrs:
         addr_str = str(addr)
-        if "/tcp/" in addr_str and "/ip4/" in addr_str and "/quic" not in addr_str:
+        if any(marker in addr_str for marker in supported_markers):
             return True
     return False
 
@@ -222,11 +231,10 @@ class HeadlessService:
             self.file_download_queue = janus.Queue[Any](maxsize=MAX_FILE_QUEUE)
             logger.debug("Message queues created successfully")
 
-            async with trio_asyncio.open_loop():
-                await services.notifications.system(
-                    "Headless service starting..."
-                )
-                await self._run_service()
+            await services.notifications.system(
+                "Headless service starting..."
+            )
+            await self._run_service()
 
         except Exception as e:
             self.failed = True

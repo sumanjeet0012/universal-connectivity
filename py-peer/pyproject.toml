@@ -11,10 +11,10 @@ dependencies = [
     "base58",
     "protobuf>=6.32.1,<7",
     "janus>=1.0.0",
-    "trio_asyncio",
     "python-dotenv>=1.2.2",
     "platformdirs>=4.0.0",
-    "tornado>=6.5.5"
+    "tornado>=6.5.5",
+    "aiortc>=1.15.0"
 ]
 
 # The Groq SDK is only used by the optional RAG assistant (POST /api/v1/ask).
@@ -97,7 +97,7 @@ pretty = true
 
 # libp2p ships ``py.typed``; these third-party packages do not.
 [[tool.mypy.overrides]]
-module = ["multiaddr.*", "trio_asyncio.*"]
+module = ["multiaddr.*", "aiortc.*"]
 ignore_missing_imports = true
 
 # Pyrefly runs alongside mypy in py-libp2p. It checks the same application
@@ -112,14 +112,14 @@ project_excludes = ["llm/**"]
 replace_imports_with_any = [
     "multiaddr",
     "multiaddr.*",
-    "trio_asyncio",
-    "trio_asyncio.*",
     "langchain_huggingface.*",
     "langchain_chroma.*",
     "langchain_community.*",
     "langchain_text_splitters.*",
     "groq",
     "groq.*",
+    "aiortc",
+    "aiortc.*",
 ]
 
 # Tornado dispatches ``get``/``post`` handlers with route arguments that are

@@ -26,7 +26,7 @@ Some of the cool and cutting-edge [transport protocols](https://connectivity.lib
 | [`node-js-peer`](./node-js-peer/) | Node.js Chat Peer in TypeScript | ✅           | ✅     | ✅            | ✅   | ✅  |
 | [`go-peer`](./go-peer/)           | Chat peer implemented in Go     | ✅           | ❌     | ✅            | ✅   | ✅  |
 | [`rust-peer`](./rust-peer/)       | Chat peer implemented in Rust   | ❌           | ❌     | ✅            | ✅   | ✅  |
-| [`py-peer`](./py-peer/)     | Chat peer implemented in Python       | ❌           | ❌     | ❌            | ✅   | ✅  |
+| [`py-peer`](./py-peer/)     | Chat peer implemented in Python       | ✅           | ✅     | ✅            | ✅   | ✅  |
 | [`nim-peer`](./nim-peer/)         | Chat peer implemented in Nim    | ❌           | ❌     | ❌            | ❌   | ✅  |
 
 ✅ - Protocol supported
