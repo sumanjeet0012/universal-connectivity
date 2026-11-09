@@ -1,23 +1,26 @@
-"""Peer identity and connection-state queries."""
+"""Peer identity, connection snapshots, and the peer monitor worker."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import trio
 from libp2p.peer.id import ID
 
 from ..errors import NotFoundError, ValidationError
 from ..models import ConnectionSummary, PeerIdentity
 
+logger = logging.getLogger("app.services.peer")
+
 
 class PeerService:
-    """Local identity plus read-only peer state.
+    """Local identity plus read-only peer state."""
 
-    Wraps the shared engine; contains no HTTP/UI framework code.
-    """
-
-    def __init__(self, engine):
+    def __init__(self, engine, notifications=None):
         self._engine = engine
+        self._notifications = notifications
+        self._known_connected_peers: set[str] = set()
 
     @property
     def engine(self):
@@ -29,15 +32,37 @@ class PeerService:
             nickname=self._engine.nickname,
         )
 
-    def connected_peers(self) -> list[str]:
-        info = self._engine.get_connection_info()
-        return sorted(str(peer) for peer in info.get("connected_peers", set()))
+    # ------------------------------------------------------------------ #
+    #  Connection snapshots
+    # ------------------------------------------------------------------ #
+    def connection_info_dict(self) -> dict[str, Any]:
+        """Engine-compatible connection snapshot (empty until ready)."""
+        engine = self._engine
+        if not getattr(engine, "ready", False):
+            return {}
 
-    def peer_count(self) -> int:
-        return self._engine.get_connection_info().get("peer_count", 0)
+        chat_room = getattr(engine, "chat_room", None)
+        if chat_room is not None:
+            connected = {
+                str(peer) for peer in chat_room.get_connected_peers()
+            }
+            peer_count = chat_room.get_peer_count()
+        else:
+            connected = set()
+            peer_count = 0
+
+        return {
+            "peer_id": str(engine.host.get_id()),
+            "nickname": engine.nickname,
+            "multiaddr": engine.full_multiaddr,
+            "multiaddrs": list(engine.full_multiaddrs),
+            "listen_addrs": list(engine.transport_addrs),
+            "connected_peers": connected,
+            "peer_count": peer_count,
+        }
 
     def connection_info(self) -> ConnectionSummary:
-        info = self._engine.get_connection_info()
+        info = self.connection_info_dict()
         return ConnectionSummary(
             peer_id=info.get("peer_id", ""),
             nickname=info.get("nickname", self._engine.nickname),
@@ -48,6 +73,16 @@ class PeerService:
                 str(peer) for peer in info.get("connected_peers", set())
             ),
         )
+
+    def connected_peers(self) -> list[str]:
+        chat_room = getattr(self._engine, "chat_room", None)
+        if chat_room is None:
+            return []
+        return sorted(str(peer) for peer in chat_room.get_connected_peers())
+
+    def peer_count(self) -> int:
+        chat_room = getattr(self._engine, "chat_room", None)
+        return chat_room.get_peer_count() if chat_room else 0
 
     def listening_addrs(self) -> list[str]:
         return list(self._engine.transport_addrs)
@@ -79,3 +114,47 @@ class PeerService:
 
     def is_connected(self, peer_id: str) -> bool:
         return peer_id in self.connected_peers()
+
+    # ------------------------------------------------------------------ #
+    #  Worker
+    # ------------------------------------------------------------------ #
+    async def monitor_peers(self) -> None:
+        """Publish connect/disconnect events and periodic peer counts."""
+        engine = self._engine
+        while True:
+            try:
+                current = {
+                    str(peer) for peer in engine.host.get_connected_peers()
+                }
+                previous = self._known_connected_peers
+                if self._notifications is not None:
+                    for peer_id in sorted(current - previous):
+                        self._notifications.publish_event(
+                            "peer_connected", {"peer_id": peer_id}
+                        )
+                    for peer_id in sorted(previous - current):
+                        self._notifications.publish_event(
+                            "peer_disconnected", {"peer_id": peer_id}
+                        )
+                self._known_connected_peers = current
+
+                logger.info(f"Connected peers are: {len(current)}")
+                logger.info(
+                    "Peers in peer store are: "
+                    f"{len(engine.host.get_peerstore().peers_with_addrs())}"
+                )
+                dht = getattr(engine, "dht", None)
+                if dht is not None:
+                    logger.info(
+                        "Peers in routing table are: "
+                        f"{len(dht.routing_table.get_peer_ids())}"
+                    )
+                pubsub = getattr(engine, "pubsub", None)
+                if pubsub is not None:
+                    logger.info(
+                        f"Peers in pubsub are: {len(pubsub.peers.keys())}"
+                    )
+            except Exception as e:
+                # A status-logging failure must never take down the node.
+                logger.warning(f"Peer monitor error: {e}")
+            await trio.sleep(5)

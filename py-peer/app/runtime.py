@@ -17,15 +17,7 @@ from .errors import ApplicationError
 from .events import Event, EventBus
 from .models import RuntimeConfig, ServiceStatus
 from .paths import DataPaths
-from .services import (
-    ConnectionService,
-    DiscoveryService,
-    FileService,
-    IdentityService,
-    MessagingService,
-    PeerService,
-    StorageService,
-)
+from .services import ServiceBundle
 from .storage import MemoryStore, open_store
 
 logger = logging.getLogger("app.runtime")
@@ -86,13 +78,28 @@ class ApplicationRuntime:
         except Exception:  # pragma: no cover - duck-typed test doubles
             logger.debug("Attached service does not accept an event bus")
 
-        self.storage = StorageService(self.service, self.store)
-        self.peer = PeerService(self.service)
-        self.connections = ConnectionService(self.service)
-        self.messaging = MessagingService(self.service, self.storage)
-        self.discovery = DiscoveryService(self.service)
-        self.identity = IdentityService(self.service)
-        self.files = FileService(self.service)
+        # The engine builds its own bundle in __init__; an injected service
+        # (or a test double) gets one composed here. Adapters always talk to
+        # these service instances, never to the engine's private methods.
+        bundle = getattr(self.service, "services", None)
+        if not isinstance(bundle, ServiceBundle):
+            bundle = ServiceBundle(
+                self.service, store=self.store, event_bus=self.events
+            )
+            try:
+                self.service.services = bundle
+            except Exception:  # pragma: no cover - duck-typed test doubles
+                logger.debug("Attached service does not accept a service bundle")
+        else:
+            bundle.bind_store(self.store)
+        self.bundle = bundle
+        self.storage = bundle.storage
+        self.peer = bundle.peers
+        self.connections = bundle.connections
+        self.messaging = bundle.messaging
+        self.discovery = bundle.discovery
+        self.identity = bundle.identity
+        self.files = bundle.files
 
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
