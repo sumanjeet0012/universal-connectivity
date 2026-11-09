@@ -32,15 +32,14 @@ class PackagingTests(unittest.TestCase):
         self.wheel = set(build["wheel"]["only-include"])
         self.sdist = set(build["sdist"]["only-include"])
 
-    def test_wheel_contains_the_runtime_and_nothing_from_the_frontend(self):
+    def test_wheel_contains_only_the_python_runtime(self):
         self.assertTrue(REQUIRED_RUNTIME <= self.wheel)
         for path in self.wheel:
-            self.assertNotIn("py-peer-frontend", path)
             self.assertNotIn("node_modules", path)
             self.assertNotIn("tests", path)
             self.assertNotIn("docs", path)
 
-    def test_sdist_contains_review_assets_but_not_frontend_dependencies(self):
+    def test_sdist_contains_review_assets_but_no_dependency_or_state_dirs(self):
         self.assertTrue(REQUIRED_RUNTIME <= self.sdist)
         for required in (
             "tests",
@@ -53,7 +52,6 @@ class PackagingTests(unittest.TestCase):
         ):
             self.assertIn(required, self.sdist)
         for path in self.sdist:
-            self.assertNotIn("py-peer-frontend", path)
             self.assertNotIn("node_modules", path)
             self.assertNotIn(".venv", path)
 

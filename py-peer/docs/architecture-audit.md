@@ -21,6 +21,11 @@ changes are recorded in §15
 > `pyproject.toml`, the React frontend) already contain uncommitted changes, and
 > `tests/`, `system_messages.txt`, and `.venv/` are untracked. Baseline results
 > therefore describe the working tree, not commit `dcfbf07` alone.
+>
+> **Repository layout update (2026-11-09):** the React frontend moved to a
+> standalone project at `../py-peer-frontend` with its git history preserved.
+> Historical `py-peer-frontend/` references in §§1–20 describe the pre-move
+> tree; current commands use the sibling checkout.
 
 ---
 
@@ -117,7 +122,7 @@ Entry points are all in `main.py:main()`:
 | `ui.py` | 323 | Textual TUI; reads janus queues, calls service directly |
 | `kivy_ui.py` *(removed in Phase 5)* | 1374 | Formerly the Kivy/KivyMD UI; deleted, see §19 |
 | `rag_handler.py` | 178 | Optional ChromaDB + Groq `/api/v1/ask` endpoint |
-| `py-peer-frontend/` | — | React + Vite + TypeScript client |
+| `../py-peer-frontend/` | — | React + Vite + TypeScript client (separate project) |
 | `tests/` | 9 files, 82 tests | `unittest` unit/regression tests (committed in `841b20a`; `test_address_config.py` added in Phase 1) |
 
 ### 2.3 Current architecture (verified)
@@ -479,7 +484,7 @@ Remaining lifecycle limitations (out of scope for this fix):
 | Simple CLI | stdin/stdout | Same process, trio | Direct method calls + janus queues | No | Input task calls `stop()`, but monitor-task exit is questionable |
 | Headless | none | Same process, trio | none | No (service owns host) | No signal handler |
 | HTTP API (`tornado_server.py` + `api/`) | Tornado | Same process, main thread; service in trio thread | Direct Python calls into `HeadlessService` | No | `on_stopped` stops IOLoop |
-| React frontend (`py-peer-frontend/`) | React 18 + Vite + TypeScript | Browser, separate process | `fetch` to `/api/v1/*`, `WebSocket` to `/ws/*` | No | Browser page lifecycle only |
+| React frontend (`../py-peer-frontend/`) | React 18 + Vite + TypeScript | Browser, separate process | `fetch` to `/api/v1/*`, `WebSocket` to `/ws/*` | No | Browser page lifecycle only |
 
 ### 4.1 API surface (verified from `tornado_server.py:52-114`)
 
@@ -828,8 +833,8 @@ Node v26.12.1 / npm 11.20.0
 | Check | Command | Result |
 |---|---|---|
 | Python unit tests | `.venv/bin/python -m unittest discover -s tests -v` | **PASS** — 25 tests, OK (0.118 s) |
-| Python lint | `ruff check . --exclude .venv --exclude py-peer-frontend --exclude __pycache__` | **FAIL** — 83 errors: 65 F541, 12 F401, 2 E402, 2 E722, 2 F841 (77 auto-fixable) |
-| Frontend lint | `npm run lint` (in `py-peer-frontend`) | **PASS with warning** — 0 errors, 1 warning `react-refresh/only-export-components` at `PyPeerContext.tsx:37` |
+| Python lint | `ruff check . --exclude .venv --exclude __pycache__` | **FAIL** — 83 errors: 65 F541, 12 F401, 2 E402, 2 E722, 2 F841 (77 auto-fixable) |
+| Frontend lint | `npm run lint` (in `../py-peer-frontend`) | **PASS with warning** — 0 errors, 1 warning `react-refresh/only-export-components` at `PyPeerContext.tsx:37` |
 | Frontend build/typecheck | `npm run build` (runs `tsc && vite build`) | **PASS** — 907 modules, built in ~0.7 s; stale Browserslist data warning |
 | Package build | `uv build` | **PASS technically** — sdist + wheel built; wheel is 36 MB / 13,646 entries and wrongly contains `node_modules` |
 | Python type check | none configured | N/A |
@@ -1797,7 +1802,7 @@ no adapter owns networking logic or creates a second host.
 | Textual TUI | `python main.py --ui` → `ui.ChatUI` | Main thread (Textual/asyncio); runtime on a daemon trio thread | `ApplicationRuntime` | Subscribes to `EventBus` (`message_received`, `system`, `peer_connected`, `peer_disconnected`); reads `runtime.peer` for status |
 | Simple CLI | `python main.py` → `main_async` | One trio loop | `ApplicationRuntime` | Subscribes to `EventBus` for messages/system events; reads `runtime.peer` |
 | HTTP API | `python main.py --api` → `TornadoServer` | Tornado/asyncio main thread; runtime on a daemon trio thread | `ApplicationRuntime` | Handlers call runtime services; WebSockets subscribe to `EventBus` |
-| React frontend | `py-peer-frontend` (Vite) | Separate browser process | Backend `ApplicationRuntime` | REST + WebSockets; reconnects automatically after backend loss |
+| React frontend | `../py-peer-frontend` (Vite) | Separate browser process | Backend `ApplicationRuntime` | REST + WebSockets; reconnects automatically after backend loss |
 | Headless | `python main.py --headless` | One trio loop | `ApplicationRuntime` | Logs plus `GET /api/v1/service/status` when the API is also enabled |
 | Route listing | `python main.py --api-routes` | Main thread, exits | None | Static route table only |
 
@@ -1857,9 +1862,9 @@ A successful poll clears the error and restores the chat without a reload.
 .venv/bin/python -m py_compile main.py ui.py tornado_server.py api/*.py app/*.py
   -> COMPILE_OK
 
-cd py-peer-frontend && npm run build
+cd ../py-peer-frontend && npm run build
   -> tsc + vite build OK
-cd py-peer-frontend && npm run lint
+cd ../py-peer-frontend && npm run lint
   -> 0 errors (1 pre-existing react-refresh warning)
 
 python main.py --api --nick smoke6 --port 0 --api-port <ephemeral>
@@ -2070,8 +2075,9 @@ or `.env` files.
 `fbf4ff94d7201edfa90992574c4879738f2dab96`, both in `pyproject.toml` and in
 `uv.lock`. A plain `pip install` of the wheel therefore resolves the same source
 instead of an unrelated PyPI release. This requires network access and `git`.
-`tests/test_packaging.py` parses `pyproject.toml` so the frontend cannot silently
-re-enter the wheel/sdist and the libp2p pin cannot regress to a moving branch.
+`tests/test_packaging.py` parses `pyproject.toml` so unexpected directories
+cannot silently re-enter the wheel/sdist and the libp2p pin cannot regress to a
+moving branch.
 
 Verification:
 

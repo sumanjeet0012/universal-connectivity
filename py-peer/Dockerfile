@@ -61,8 +61,8 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Runtime environment and application code. The React frontend is deliberately
-# not included; it is deployed separately and talks to this container's API.
+# Runtime environment and application code. The React frontend is a separate
+# project and is deliberately not included; it talks to this container's API.
 COPY --from=builder --chown=uc:uc /app/.venv /app/.venv
 COPY --chown=uc:uc main.py headless.py chatroom.py tornado_server.py rag_handler.py ./
 COPY --chown=uc:uc app ./app

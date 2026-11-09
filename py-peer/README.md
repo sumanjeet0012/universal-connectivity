@@ -149,7 +149,7 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 - **tornado_server.py** - Tornado REST + WebSocket server bootstrap and route wiring
 - **api/** - Versioned API handlers (node, peers, topics, messages, files, dht, pubsub, identity, service, websocket)
 - **rag_handler.py** - Retrieval-augmented QA endpoint (`/api/v1/ask`)
-- **py-peer-frontend/** - React + Vite web UI consuming the API
+- **React web frontend** - separate `py-peer-frontend` project (sibling checkout) consuming the API
 
 ### Message Flow
 
@@ -574,7 +574,8 @@ Just type messages and press Enter. Use `/quit` to exit.
 
 ### 3. React Web Frontend
 
-The React frontend is located in `py-peer/py-peer-frontend` and uses the Tornado API.
+The React frontend lives in the separate `py-peer-frontend` project (a sibling
+checkout of this repository) and uses the Tornado API.
 
 **Start backend API:**
 ```bash
@@ -583,7 +584,7 @@ python main.py --api --nick Alice --api-port 8765
 
 **Start frontend (new terminal):**
 ```bash
-cd py-peer/py-peer-frontend
+cd ../py-peer-frontend
 npm install
 npm run dev
 ```
@@ -591,7 +592,7 @@ npm run dev
 Open `http://localhost:3000`.
 
 **Production/remote backend:**
-- Set `VITE_API_URL` in `py-peer/py-peer-frontend/.env.local`
+- Set `VITE_API_URL` in `py-peer-frontend/.env.local`
 - Example: `VITE_API_URL=https://your-backend.example.com`
 
 ## ⚙️ Configuration
@@ -787,11 +788,13 @@ py-peer/
 ├── api/                 # Tornado API handlers (v1)
 ├── app/                 # Runtime, services, events, storage, paths
 ├── tests/               # unittest suite
-├── py-peer-frontend/    # React + Vite frontend
 ├── pyproject.toml       # Project configuration & dependencies
 ├── uv.lock              # Dependency lock file
 └── README.md            # This file
 ```
+
+The React frontend is a separate project (`../py-peer-frontend`); it is not part
+of this tree.
 
 ### Key Classes
 
@@ -831,8 +834,8 @@ python main.py --ui --nick Bob --port 8080
 # Run REST + WebSocket API
 python main.py --api --nick ApiNode --api-port 8765
 
-# Run React frontend
-cd py-peer/py-peer-frontend && npm run dev
+# Run React frontend (separate sibling project)
+cd ../py-peer-frontend && npm run dev
 ```
 
 ### Code Style
@@ -946,8 +949,8 @@ Run backend and frontend together:
 # Terminal 1 (backend)
 python main.py --api --nick BackendNode --api-port 8765
 
-# Terminal 2 (frontend)
-cd py-peer/py-peer-frontend
+# Terminal 2 (frontend, separate sibling project)
+cd ../py-peer-frontend
 npm run dev
 ```
 

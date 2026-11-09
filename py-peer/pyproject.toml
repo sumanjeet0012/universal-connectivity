@@ -42,8 +42,9 @@ only-include = [
     "llm",
 ]
 
-# The source distribution carries everything needed to review, test, and build
-# the project, but never frontend dependencies or local runtime state.
+# The source distribution carries the Python project and its review assets.
+# The React frontend is a separate project, so no frontend dependencies or
+# local runtime state belong here.
 [tool.hatch.build.targets.sdist]
 only-include = [
     "main.py",

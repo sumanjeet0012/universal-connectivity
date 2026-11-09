@@ -29,8 +29,7 @@ data/
 *.db-shm
 logs/
 
-# Frontend build output and dependencies
-py-peer-frontend/
+# Frontend build output and dependencies (the React app is a separate project)
 node_modules/
 dist/
 

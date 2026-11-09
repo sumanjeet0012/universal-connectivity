@@ -100,10 +100,9 @@ class DockerfileTests(unittest.TestCase):
         self.assertIn('ENTRYPOINT ["python", "main.py"]', self.text)
         self.assertIn("HEALTHCHECK", self.text)
 
-    def test_only_tcp_ports_and_no_frontend_or_secrets(self):
+    def test_only_tcp_ports_and_no_secrets(self):
         self.assertIn("EXPOSE 4001/tcp 8765/tcp", self.text)
         self.assertNotIn("/udp", self.text.lower())
-        self.assertNotIn("py-peer-frontend", self.text)
         self.assertNotIn("node_modules", self.text)
         self.assertNotIn("--kivy", self.text)
 
@@ -121,7 +120,6 @@ class DockerignoreTests(unittest.TestCase):
             ".env",
             "__pycache__/",
             "system_messages.txt",
-            "py-peer-frontend/",
             "node_modules/",
             "tests/",
         ):
