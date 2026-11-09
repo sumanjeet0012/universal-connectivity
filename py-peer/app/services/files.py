@@ -141,6 +141,15 @@ class FileService:
         if not isinstance(cid, str) or not cid.strip():
             raise ValidationError("'file_cid' field is required.")
         cid = cid.strip()
+        try:
+            cid_bytes = bytes.fromhex(cid)
+        except ValueError as exc:
+            raise ValidationError(
+                "'file_cid' must be a hexadecimal CID."
+            ) from exc
+        if not cid_bytes:
+            raise ValidationError("'file_cid' must be a hexadecimal CID.")
+        cid = cid_bytes.hex()
         name = (file_name or "unknown").strip() or "unknown"
         if not self.queue_download(cid, name):
             raise OperationError("Failed to queue download.")

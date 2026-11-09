@@ -36,6 +36,8 @@ class TopicMessagesHandler(BaseHandler):
     def get(self, topic):
         if not self.require_ready():
             return
+        if not self.require_topic(topic):
+            return
         try:
             limit = int(self.get_argument("limit", 100))
             offset = int(self.get_argument("offset", 0))
@@ -65,6 +67,8 @@ class TopicUnreadHandler(BaseHandler):
     def get(self, topic):
         if not self.require_ready():
             return
+        if not self.require_topic(topic):
+            return
         count = self.messaging_service.unread_count(topic)
         self.send_success({"topic": topic, "unread_count": count})
 
@@ -74,6 +78,8 @@ class TopicMarkReadHandler(BaseHandler):
 
     def put(self, topic):
         if not self.require_ready():
+            return
+        if not self.require_topic(topic):
             return
         self.messaging_service.mark_read(topic)
         self.send_success({"topic": topic, "message": "All messages marked as read"})

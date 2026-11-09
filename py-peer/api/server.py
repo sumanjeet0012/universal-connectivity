@@ -10,7 +10,7 @@ Usage
 -----
 Instantiate TornadoServer and call start():
 
-    from core.tornado_server import TornadoServer
+    from .server import TornadoServer
     server = TornadoServer(headless_service, port=8765)
     server.start()          # blocks — runs Tornado IOLoop
 """
@@ -21,22 +21,22 @@ import sys
 import tornado.ioloop
 import tornado.web
 
-from api.node      import NodeInfoHandler, NodeStatusHandler, NodeMultiaddrHandler
-from api.peers     import (PeerListHandler, PeerCountHandler, KnownPeersHandler,
+from .node      import NodeInfoHandler, NodeStatusHandler, NodeMultiaddrHandler
+from .peers     import (PeerListHandler, PeerCountHandler, KnownPeersHandler,
                            PeerConnectHandler, PeerDetailHandler, PeerIdentifyHandler)
-from api.messages  import (SendDefaultMessageHandler, TopicMessagesHandler,
+from .messages  import (SendDefaultMessageHandler, TopicMessagesHandler,
                            TopicUnreadHandler, TopicMarkReadHandler)
-from api.topics    import TopicListHandler, TopicInfoHandler, TopicMeshPeersHandler
-from api.files     import (SharedFilesHandler, SharedFileDetailHandler,
+from .topics    import TopicListHandler, TopicInfoHandler, TopicMeshPeersHandler
+from .files     import (SharedFilesHandler, SharedFileDetailHandler,
                            ShareFileHandler, DownloadFileHandler, UploadAndShareHandler)
-from api.dht       import DHTStatusHandler, DHTPeersHandler, DHTRoutingTableHandler
-from api.pubsub    import (PubSubPeersHandler, PubSubMeshHandler, PubSubFanoutHandler,
+from .dht       import DHTStatusHandler, DHTPeersHandler, DHTRoutingTableHandler
+from .pubsub    import (PubSubPeersHandler, PubSubMeshHandler, PubSubFanoutHandler,
                            PubSubConfigHandler, PubSubSubscriptionsHandler)
-from api.identity  import (IdentityCacheListHandler, IdentityPeerHandler,
+from .identity  import (IdentityCacheListHandler, IdentityPeerHandler,
                            IdentityPublicKeyHandler, IdentityCacheDeleteHandler)
-from api.service   import (ServiceStatusHandler, ServiceConfigHandler,
+from .service   import (ServiceStatusHandler, ServiceConfigHandler,
                            ServiceStopHandler, ServiceBootstrapHandler)
-from api.websocket import (MessageStreamHandler, SystemStreamHandler,
+from .websocket import (MessageStreamHandler, SystemStreamHandler,
                            PeerUpdateHandler, MeshUpdateHandler)
 from core.rag_handler import AskHandler, load_vectorstore
 
@@ -145,7 +145,7 @@ class TornadoServer:
     """
 
     def __init__(self, runtime, port: int = DEFAULT_API_PORT, host: str = DEFAULT_API_HOST):
-        from api.base import as_runtime
+        from .base import as_runtime
 
         self.runtime = as_runtime(runtime)
         self.service = self.runtime.service

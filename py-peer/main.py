@@ -474,7 +474,7 @@ def main():
     
     # Print routes and exit early if requested
     if getattr(args, 'api_routes', False):
-        from core.tornado_server import _print_routes
+        from api.server import _print_routes
         _print_routes(getattr(args, 'api_port', 8765))
         sys.exit(0)
 
@@ -492,7 +492,7 @@ def main():
             logger.info(f"✅ HeadlessService ready — launching Tornado on {args.api_host}:{args.api_port}")
 
             # Start Tornado in the main thread (blocks here)
-            from core.tornado_server import TornadoServer, _print_routes
+            from api.server import TornadoServer, _print_routes
             _print_routes(args.api_port)
             server = TornadoServer(runtime, port=args.api_port, host=args.api_host)
             previous_handlers = install_shutdown_signal_handlers(

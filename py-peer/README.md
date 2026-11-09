@@ -142,16 +142,17 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 ### Components
 
 - **main.py** - Application entry point and argument parsing
-- **core/** - Peer engine and server adapters
+- **core/** - Transport engine and shared transport definitions
   - **headless.py** - Background engine managing libp2p operations (the runtime's transport layer)
-  - **chatroom.py** - Chat room logic, topic management, and message handling
-  - **tornado_server.py** - Tornado REST + WebSocket server bootstrap and route wiring
+  - **constants.py** - Transport limits, bootstrap peers, and defaults
   - **rag_handler.py** - Retrieval-augmented QA endpoint (`/api/v1/ask`)
   - **healthcheck.py** - Container readiness probe
+- **app/** - Framework-independent runtime, chat domain, and services (peer, connection, messaging, discovery, identity, files, storage)
+  - **chatroom.py** - Chat room logic, topic management, message handling, and peer nicknames
+- **api/** - Versioned API handlers (node, peers, topics, messages, files, dht, pubsub, identity, service, websocket)
+  - **server.py** - Tornado REST + WebSocket server bootstrap and route wiring
 - **ui/** - Textual terminal interface
   - **textual.py** - Textual TUI implementation
-- **app/** - Framework-independent `ApplicationRuntime` and services (peer, connection, messaging, discovery, identity, files, storage)
-- **api/** - Versioned API handlers (node, peers, topics, messages, files, dht, pubsub, identity, service, websocket)
 - **React web frontend** - separate `py-peer-frontend` project (sibling checkout) consuming the API
 
 ### Message Flow
@@ -711,7 +712,7 @@ The `/api/v1/ask` endpoint is available when vector store + LLM dependencies are
 
 1. Install additional packages:
 ```bash
-pip install chromadb langchain langchain-community langchain-huggingface sentence-transformers langchain-chroma
+pip install -r requirements-rag.txt
 ```
 2. Build vector store:
 ```bash
@@ -776,19 +777,21 @@ the peer never starts half-configured.
 ```
 py-peer/
 ├── main.py              # Entry point & argument parsing
-├── core/                # Peer engine and interface adapters
+├── core/                # Transport engine and shared definitions
 │   ├── headless.py      # libp2p transport & lifecycle
-│   ├── chatroom.py      # Chat room logic & topic handling
-│   ├── tornado_server.py# REST + WebSocket server
+│   ├── constants.py     # Transport limits, peers, and defaults
 │   ├── rag_handler.py   # RAG assistant endpoint
 │   └── healthcheck.py   # Container readiness probe
+├── app/                 # Runtime, chat domain, services, storage
+│   ├── chatroom.py      # Chat room logic & topic handling
+│   └── ...              # Runtime, services, events, storage, paths
+├── api/                 # Tornado API handlers (v1)
+│   └── server.py        # REST + WebSocket server
 ├── ui/                  # Textual terminal interface
 │   └── textual.py       # Textual TUI implementation
 ├── Dockerfile           # Multi-stage runtime image
-├── docker-compose.yml         # Compose service, volume, health check
+├── docker-compose.yml   # Compose service, volume, health check
 ├── .dockerignore        # Build-context exclusions
-├── api/                 # Tornado API handlers (v1)
-├── app/                 # Runtime, services, events, storage, paths
 ├── pyproject.toml       # Project configuration & dependencies
 ├── uv.lock              # Dependency lock file
 └── README.md            # This file
@@ -801,15 +804,16 @@ of this tree.
 
 **core/headless.py:**
 - `HeadlessService` - libp2p transport and process lifecycle
-- Delegates application work to `app/services` via `ServiceBundle`
+- Receives its `ServiceBundle` from `ApplicationRuntime` and delegates application work to `app/services`
 
-**core/chatroom.py:**
+**app/chatroom.py:**
 - `ChatRoom` - Core libp2p chat functionality
 - Dynamic topic subscription
 - Unified message handler for all topics
+- Nickname announcements on a protocol-only profile topic
 - Message validation & signing
 
-**core/tornado_server.py + api/**
+**api/server.py + api/**
 - REST endpoints for node, peers, topics, messages, files, DHT, pubsub, identity, service
 - WebSocket streams for messages, system events, peer updates, mesh updates
 - Shared JSON response envelope + readiness guards
@@ -880,7 +884,7 @@ python main.py --ui --nick YourName --port 8081
 
 **6. RAG Assistant Unavailable (`/api/v1/ask` returns 503)**
 - Build vector store via `llm/codes/build_vectorstore.py`
-- Install RAG dependencies (Chroma/LangChain/SentenceTransformers)
+- Install RAG dependencies: `pip install -r requirements-rag.txt`
 - Set `GROQ_API_KEY` environment variable
 
 ### Debug Mode

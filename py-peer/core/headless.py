@@ -3,7 +3,7 @@ Headless Service for Universal Connectivity Python Peer
 
 This module owns the libp2p transport (host, pubsub, DHT, bitswap) and the
 process lifecycle. Application behaviour lives in ``app.services``; the engine
-constructs one ServiceBundle and only calls into it.
+receives one ServiceBundle from ``ApplicationRuntime`` and only calls into it.
 """
 
 import logging
@@ -36,7 +36,7 @@ from libp2p.pubsub.gossipsub import (
 from libp2p.pubsub.pubsub import Pubsub
 from libp2p.tools.anyio_service import background_trio_service
 
-from app.constants import (
+from .constants import (
     BOOTSTRAP_PEERS,
     DEFAULT_DOWNLOAD_DIR,
     DEFAULT_PORT,
@@ -48,8 +48,6 @@ from app.constants import (
     MAX_REQUEST_QUEUE,
     MAX_TOPIC_MESSAGES,
 )
-from app.services.bundle import ServiceBundle
-from app.storage import InMemoryMessageStore
 
 logger = logging.getLogger("headless")
 
@@ -103,6 +101,7 @@ class HeadlessService:
         message_store=None,
         event_bus=None,
         identity_path: str = None,
+        services=None,
     ):
         self.nickname = nickname
         self.port = port if port != 0 else 4001
@@ -163,7 +162,7 @@ class HeadlessService:
         self.file_download_queue = None
 
         # Storage and file destination are engine-owned configuration.
-        self.message_store = message_store or InMemoryMessageStore()
+        self.message_store = message_store
         self.download_dir = DEFAULT_DOWNLOAD_DIR
         os.makedirs(self.download_dir, exist_ok=True)
 
@@ -181,11 +180,9 @@ class HeadlessService:
         self._started = False
         self._shutdown_done = False
 
-        # Application services: chat room, storage, discovery, dialling,
-        # files, notifications, identity, and peer monitoring.
-        self.services = ServiceBundle(
-            self, store=self.message_store, event_bus=event_bus
-        )
+        # Injected by ApplicationRuntime so the transport engine stays free of
+        # application-layer imports.
+        self.services = services
 
         if not ui_mode:
             logger.info(
@@ -198,6 +195,11 @@ class HeadlessService:
     # ------------------------------------------------------------------ #
     async def start(self):
         """Start the headless service."""
+        if self.services is None:
+            raise RuntimeError(
+                "HeadlessService requires an injected ServiceBundle; "
+                "construct it through ApplicationRuntime."
+            )
         if self._started:
             raise RuntimeError(
                 "HeadlessService.start() has already been called on this instance"

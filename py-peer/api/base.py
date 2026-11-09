@@ -170,6 +170,16 @@ class BaseHandler(tornado.web.RequestHandler):
             return False
         return True
 
+    def require_topic(self, topic):
+        """Return False and send 404 unless ``topic`` is subscribed."""
+        if topic not in self.messaging_service.subscribed_topics():
+            self.send_error_response(
+                f"Topic '{topic}' not found or not subscribed.",
+                status=404,
+            )
+            return False
+        return True
+
     # ------------------------------------------------------------------ #
     #  Application error translation                                       #
     # ------------------------------------------------------------------ #

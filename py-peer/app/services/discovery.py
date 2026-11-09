@@ -14,7 +14,7 @@ from queue import Empty, Full
 
 import trio
 
-from core.chatroom import MAX_TOPIC_NAME_LENGTH, MAX_TOPICS, PUBSUB_DISCOVERY_TOPIC
+from ..chatroom import MAX_TOPIC_NAME_LENGTH, MAX_TOPICS, NON_CHAT_TOPICS
 
 from ..constants import BOOTSTRAP_PEERS
 from ..errors import (
@@ -76,8 +76,8 @@ class DiscoveryService:
         if not isinstance(topic, str) or not topic.strip():
             raise ValidationError("'topic' field is required.")
         topic = topic.strip()
-        if topic == PUBSUB_DISCOVERY_TOPIC:
-            raise ValidationError("That topic name is reserved for peer discovery.")
+        if topic in NON_CHAT_TOPICS:
+            raise ValidationError("That topic name is reserved for protocol use.")
         already = self._subscribed_topics()
         if topic in already:
             raise ConflictError(f"Already subscribed to topic '{topic}'.")
@@ -108,7 +108,7 @@ class DiscoveryService:
                 f"({len(topic_name)} > {MAX_TOPIC_NAME_LENGTH} chars)"
             )
             return False
-        if topic_name == PUBSUB_DISCOVERY_TOPIC:
+        if topic_name in NON_CHAT_TOPICS:
             logger.warning(f"Cannot subscribe to reserved topic: {topic_name}")
             return False
         if len(self._subscribed_topics()) >= MAX_TOPICS:

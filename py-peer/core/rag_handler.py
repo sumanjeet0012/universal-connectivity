@@ -12,15 +12,19 @@ prompt → send to Groq (llama-3.3-70b-versatile).
 import json
 import logging
 import os
+from pathlib import Path
 
 import tornado.web
 from groq import AsyncGroq
 
 log = logging.getLogger("rag_handler")
 
-# Absolute path derived from this file's location — works regardless of cwd
-_HERE = os.path.dirname(os.path.abspath(__file__))
-VECTOR_STORE_DIR = os.path.join(_HERE, "llm", "codes", "libp2p_vectorstore")
+# Resolve the index from the project root, not from this module's directory.
+# ``core/rag_handler.py`` is one level below the repository root.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+VECTOR_STORE_DIR = str(
+    _PROJECT_ROOT / "llm" / "codes" / "libp2p_vectorstore"
+)
 GROQ_MODEL       = "llama-3.3-70b-versatile"
 _groq_client     = None
 TOP_K            = 4

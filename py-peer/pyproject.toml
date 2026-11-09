@@ -18,6 +18,7 @@ dependencies = [
     "tornado>=6.5.5"
 ]
 
+
 [project.scripts]
 py-peer = "main:main"
 
@@ -25,9 +26,10 @@ py-peer = "main:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Only the entry point and Python packages are shipped; engine/server modules
-# live in ``core`` and the Textual adapter in ``ui``, so the repository root
-# stays limited to project files.
+# Only the entry point and Python packages are shipped; the transport engine
+# lives in ``core``, application/domain code in ``app``, HTTP adapters in
+# ``api``, and the Textual adapter in ``ui``. The repository root stays limited
+# to project files.
 [tool.hatch.build.targets.wheel]
 only-include = [
     "main.py",
@@ -52,6 +54,7 @@ only-include = [
     "assets",
     "Dockerfile",
     "docker-compose.yml",
+    "requirements-rag.txt",
     ".dockerignore",
     "README.md",
     "pyproject.toml",

@@ -6,8 +6,10 @@ pubsub subscriptions, and peer discovery.
 """
 
 import base58
+import json
 import logging
 import os
+import threading
 import time
 import trio
 from dataclasses import dataclass
@@ -83,13 +85,14 @@ CHAT_ROOM_BUF_SIZE = 128
 
 # Topics used in the chat system
 PUBSUB_DISCOVERY_TOPIC = "universal-connectivity-browser-peer-discovery"
+PROFILE_TOPIC = "universal-connectivity-profiles"
 CHAT_TOPIC = "universal-connectivity"
 
 # Topics that are part of the protocol but are not user-facing chat channels.
 # The discovery topic carries protobuf peer/WebRTC announcements from browser
-# peers; treating it as chat exposes it as a channel and can display binary
-# payloads as messages.
-NON_CHAT_TOPICS = {PUBSUB_DISCOVERY_TOPIC}
+# peers; the profile topic carries nickname announcements between Python
+# peers. Treating either as chat would expose protocol payloads as messages.
+NON_CHAT_TOPICS = {PUBSUB_DISCOVERY_TOPIC, PROFILE_TOPIC}
 
 # Guardrails against a client creating unlimited channels.
 MAX_TOPIC_NAME_LENGTH = 128
@@ -121,6 +124,7 @@ class ChatMessage:
     sender_nick: str
     topic: str = None  # Topic the message was received on
     timestamp: Optional[float] = None
+    message_id: Optional[str] = None
     
     def __post_init__(self):
         if self.timestamp is None:
@@ -154,6 +158,9 @@ class ChatRoom:
         self.subscriptions = {}  # topic_name -> subscription object
         self.chat_subscription = None
         self.discovery_subscription = None
+        self.profile_subscription = None
+        self.peer_nicknames: dict[str, str] = {}
+        self._nickname_lock = threading.RLock()
         
         # Message handlers
         self.message_handlers = []
@@ -184,6 +191,7 @@ class ChatRoom:
         """Create and join a chat room."""
         chat_room = cls(host, pubsub, nickname, multiaddr, headless_service, topic)
         await chat_room._subscribe_to_topics()
+        await chat_room.announce_profile()
         chat_room._log_system_message(f"Joined chat room as '{nickname}'")
         return chat_room
     
@@ -205,6 +213,13 @@ class ChatRoom:
             
             # Add discovery topic to handlers list
             self.topic_handlers.append((PUBSUB_DISCOVERY_TOPIC, self.discovery_subscription))
+
+            # Protocol-only topic for exchanging nicknames between Python peers.
+            # Browser peers ignore it; chat framing remains unchanged.
+            self.profile_subscription = await self.pubsub.subscribe(PROFILE_TOPIC)
+            self.subscriptions[PROFILE_TOPIC] = self.profile_subscription
+            self.topic_handlers.append((PROFILE_TOPIC, self.profile_subscription))
+            logger.info(f"Subscribed to profile topic: {PROFILE_TOPIC}")
             
         except Exception as e:
             logger.error(f"Failed to subscribe to topics: {e}")
@@ -297,6 +312,31 @@ class ChatRoom:
         """Handle incoming messages for chat topics; drain protocol topics."""
         logger.debug(f"📨 Starting message handler for topic: {topic_name}")
 
+        if topic_name == PROFILE_TOPIC:
+            async for message in self._message_stream(subscription):
+                try:
+                    payload = json.loads(message.data.decode())
+                    if not isinstance(payload, dict):
+                        continue
+                    nickname = payload.get("nickname")
+                    if not isinstance(nickname, str):
+                        continue
+                    nickname = nickname.strip()
+                    if not nickname or len(nickname) > 64:
+                        continue
+                    sender_id = (
+                        base58.b58encode(message.from_id).decode()
+                        if message.from_id
+                        else payload.get("peer_id")
+                    )
+                    if not sender_id or sender_id == self.peer_id:
+                        continue
+                    with self._nickname_lock:
+                        self.peer_nicknames[str(sender_id)] = nickname
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+            return
+
         if topic_name in NON_CHAT_TOPICS:
             # The discovery topic carries protobuf peer announcements, not
             # chat. Keep consuming it so the subscription buffer does not fill
@@ -328,11 +368,23 @@ class ChatRoom:
                     else:
                         logger.debug(f"📝 Processing own message from {sender_id} (no validation needed)")
                     
-                    # Format sender nickname
+                    # Use the libp2p sequence number as the stable wire id.
+                    # Re-delivery of the same frame must collapse in storage.
+                    seqno = getattr(message, "seqno", None)
+                    message_id = None
+                    if seqno:
+                        if isinstance(seqno, bytes):
+                            seqno = seqno.hex()
+                        message_id = f"{topic_name}:{sender_id}:{seqno}"
+
+                    # Format sender nickname; profiles are exchanged on the
+                    # protocol-only profile topic.
                     if is_own_message:
-                        sender_nick = f"{self.nickname}"
+                        sender_nick = self.nickname
                     else:
-                        sender_nick = sender_id[-8:] if len(sender_id) > 8 else sender_id
+                        sender_nick = self.get_peer_nickname(sender_id) or (
+                            sender_id[-8:] if len(sender_id) > 8 else sender_id
+                        )
                     
                     actual_message = raw_data
                     
@@ -343,7 +395,8 @@ class ChatRoom:
                         message=actual_message,
                         sender_id=sender_id,
                         sender_nick=sender_nick,
-                        topic=topic_name
+                        topic=topic_name,
+                        message_id=message_id,
                     )
                     
                     # Call message handlers
@@ -497,6 +550,21 @@ class ChatRoom:
         """Get number of connected peers."""
         return len(self.pubsub.peers)
     
+    async def announce_profile(self) -> None:
+        """Publish this peer's nickname on the protocol-only profile topic."""
+        try:
+            payload = json.dumps(
+                {"peer_id": self.peer_id, "nickname": self.nickname}
+            ).encode()
+            await self.pubsub.publish(PROFILE_TOPIC, payload)
+        except Exception:
+            logger.debug("Could not announce peer profile", exc_info=True)
+
+    def get_peer_nickname(self, peer_id: str) -> str | None:
+        """Return a cached remote nickname, if one has been announced."""
+        with self._nickname_lock:
+            return self.peer_nicknames.get(peer_id)
+
     def get_subscribed_topics(self) -> Set[str]:
         """Get user-facing (chat) subscriptions, excluding protocol topics."""
         return {

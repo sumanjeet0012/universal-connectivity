@@ -1,6 +1,7 @@
-"""Peer engine and interface adapters.
+"""Transport engine and standalone adapters.
 
-``main.py`` stays at the repository root as the entry point; the transport
-engine, chat room, Tornado server, RAG handler, and container health probe
-live here. The Textual interface lives in the ``ui`` package.
+``main.py`` stays at the repository root as the entry point. The libp2p
+transport engine, shared transport constants, RAG handler, and container
+health probe live here. Application/domain code lives in ``app``, HTTP and
+WebSocket transport lives in ``api``, and the Textual interface in ``ui``.
 """

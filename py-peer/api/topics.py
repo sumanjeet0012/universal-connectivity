@@ -8,7 +8,7 @@ GET    /api/v1/topics/{topic}/peers - peers in GossipSub mesh for topic
 """
 
 from .base import BaseHandler, parse_string_field
-from core.chatroom import MAX_TOPIC_NAME_LENGTH
+from app.chatroom import MAX_TOPIC_NAME_LENGTH
 
 
 def _sanitize_last_message(info):
@@ -60,6 +60,8 @@ class TopicMeshPeersHandler(BaseHandler):
 
     def get(self, topic):
         if not self.require_ready():
+            return
+        if not self.require_topic(topic):
             return
         peers_in_mesh = self.discovery_service.mesh_peers(topic)
         self.send_success({

@@ -41,7 +41,7 @@ class ApplicationRuntime:
         self.paths: DataPaths | None = None
 
         if service is None:
-            from core.chatroom import configure_system_log
+            from .chatroom import configure_system_log
             from core.headless import HeadlessService
 
             # Resolve and prove the data directory before anything is written:

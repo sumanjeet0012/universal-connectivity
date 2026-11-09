@@ -127,8 +127,9 @@ class PeerService:
                     str(peer) for peer in engine.host.get_connected_peers()
                 }
                 previous = self._known_connected_peers
+                new_peers = current - previous
                 if self._notifications is not None:
-                    for peer_id in sorted(current - previous):
+                    for peer_id in sorted(new_peers):
                         self._notifications.publish_event(
                             "peer_connected", {"peer_id": peer_id}
                         )
@@ -137,6 +138,18 @@ class PeerService:
                             "peer_disconnected", {"peer_id": peer_id}
                         )
                 self._known_connected_peers = current
+
+                if new_peers:
+                    chat_room = getattr(engine, "chat_room", None)
+                    announce = getattr(chat_room, "announce_profile", None)
+                    if announce is not None:
+                        try:
+                            await announce()
+                        except Exception:
+                            logger.debug(
+                                "Could not announce profile after peer connect",
+                                exc_info=True,
+                            )
 
                 logger.info(f"Connected peers are: {len(current)}")
                 logger.info(

@@ -14,7 +14,7 @@ from queue import Empty, Full
 
 import trio
 
-from core.chatroom import ChatMessage, ChatRoom
+from ..chatroom import ChatMessage, ChatRoom
 
 from ..constants import FILE_MESSAGE_PREFIX
 from ..errors import NotReadyError, OperationError, ValidationError
@@ -241,6 +241,9 @@ class MessagingService:
                     "topic": topic,
                     "read": is_own_message,
                 }
+
+            if getattr(message, "message_id", None):
+                message_data["message_id"] = message.message_id
 
             if not await self._storage.append_message(message_data):
                 logger.debug(
