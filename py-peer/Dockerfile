@@ -66,6 +66,7 @@ WORKDIR /app
 COPY --from=builder --chown=uc:uc /app/.venv /app/.venv
 COPY --chown=uc:uc main.py ./
 COPY --chown=uc:uc core ./core
+COPY --chown=uc:uc ui ./ui
 COPY --chown=uc:uc app ./app
 COPY --chown=uc:uc api ./api
 COPY --chown=uc:uc llm ./llm

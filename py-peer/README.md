@@ -142,13 +142,14 @@ Textual and CLI modes run with direct in-process access to the HeadlessService. 
 ### Components
 
 - **main.py** - Application entry point and argument parsing
-- **core/** - Peer engine and interface adapters
+- **core/** - Peer engine and server adapters
   - **headless.py** - Background engine managing libp2p operations (the runtime's transport layer)
   - **chatroom.py** - Chat room logic, topic management, and message handling
-  - **ui.py** - Textual-based terminal user interface
   - **tornado_server.py** - Tornado REST + WebSocket server bootstrap and route wiring
   - **rag_handler.py** - Retrieval-augmented QA endpoint (`/api/v1/ask`)
   - **healthcheck.py** - Container readiness probe
+- **ui/** - Textual terminal interface
+  - **textual.py** - Textual TUI implementation
 - **app/** - Framework-independent `ApplicationRuntime` and services (peer, connection, messaging, discovery, identity, files, storage)
 - **api/** - Versioned API handlers (node, peers, topics, messages, files, dht, pubsub, identity, service, websocket)
 - **React web frontend** - separate `py-peer-frontend` project (sibling checkout) consuming the API
@@ -275,7 +276,7 @@ verified path.
 
 ## 🐳 Docker Deployment
 
-The `Dockerfile` and `compose.yaml` run the peer in headless mode with the
+The `Dockerfile` and `docker-compose.yml` run the peer in headless mode with the
 Tornado REST/WebSocket API. The React frontend is **not** bundled into the
 Python image; deploy it separately and point it at the published API.
 
@@ -649,7 +650,7 @@ There is no configuration file. Values resolve in this order:
    - `UC_HEALTHCHECK_URL` — used only by the container health probe
 3. **Built-in default**
 
-The `UC_*` variables in `compose.yaml` are **Compose substitutions** used to
+The `UC_*` variables in `docker-compose.yml` are **Compose substitutions** used to
 build the container command and port mappings; the peer runtime only reads
 `UC_DATA_DIR` from the environment (`core/healthcheck.py` reads
 `UC_HEALTHCHECK_URL`, and the optional RAG client reads `GROQ_API_KEY`). Keep
@@ -778,12 +779,13 @@ py-peer/
 ├── core/                # Peer engine and interface adapters
 │   ├── headless.py      # libp2p transport & lifecycle
 │   ├── chatroom.py      # Chat room logic & topic handling
-│   ├── ui.py            # Textual TUI implementation
 │   ├── tornado_server.py# REST + WebSocket server
 │   ├── rag_handler.py   # RAG assistant endpoint
 │   └── healthcheck.py   # Container readiness probe
+├── ui/                  # Textual terminal interface
+│   └── textual.py       # Textual TUI implementation
 ├── Dockerfile           # Multi-stage runtime image
-├── compose.yaml         # Compose service, volume, health check
+├── docker-compose.yml         # Compose service, volume, health check
 ├── .dockerignore        # Build-context exclusions
 ├── api/                 # Tornado API handlers (v1)
 ├── app/                 # Runtime, services, events, storage, paths

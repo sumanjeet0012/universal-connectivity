@@ -521,7 +521,7 @@ def main():
 
             # Imported lazily: headless, CLI, and API modes must not require a
             # TUI framework to be importable.
-            from core.ui import ChatUI
+            from ui.textual import ChatUI
 
             # Special handling for UI mode
             logger.info("Starting in UI mode...")

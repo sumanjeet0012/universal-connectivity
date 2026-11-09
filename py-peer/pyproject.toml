@@ -25,12 +25,14 @@ py-peer = "main:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Only the entry point and Python packages are shipped; application modules
-# live in ``core`` so the repository root stays limited to project files.
+# Only the entry point and Python packages are shipped; engine/server modules
+# live in ``core`` and the Textual adapter in ``ui``, so the repository root
+# stays limited to project files.
 [tool.hatch.build.targets.wheel]
 only-include = [
     "main.py",
     "core",
+    "ui",
     "api",
     "app",
     "llm",
@@ -43,12 +45,13 @@ only-include = [
 only-include = [
     "main.py",
     "core",
+    "ui",
     "api",
     "app",
     "llm",
     "assets",
     "Dockerfile",
-    "compose.yaml",
+    "docker-compose.yml",
     ".dockerignore",
     "README.md",
     "pyproject.toml",
