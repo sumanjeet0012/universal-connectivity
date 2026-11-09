@@ -177,7 +177,7 @@ User Input → UI Thread → Queue → Async Thread (Trio)
 - **uv** (recommended) or pip package manager
 - Network connectivity for peer-to-peer communication
 - For React frontend: **Node.js 18+** and npm
-- For RAG endpoint (`/api/v1/ask`): Groq API key + vector store build dependencies
+- For RAG endpoint (`/api/v1/ask`): the optional `rag` extra (Groq SDK), a Groq API key, and the vector-store build dependencies
 
 ### Supported platforms
 
@@ -202,12 +202,8 @@ requires `--announce-host` and an open firewall port.
 
 ```bash
 # Clone the repository
-git clone https://github.com/sumanjeet0012/universal-connectivity.git
-cd universal-connectivity
-
-# Switch to the py-peer development branch
-git checkout py-peer-development
-cd py-peer
+git clone https://github.com/libp2p/universal-connectivity.git
+cd universal-connectivity/py-peer
 
 # Create virtual environment
 uv venv
@@ -225,12 +221,8 @@ uv pip install -e .
 
 ```bash
 # Clone the repository
-git clone https://github.com/sumanjeet0012/universal-connectivity.git
-cd universal-connectivity
-
-# Switch to the py-peer development branch
-git checkout py-peer-development
-cd py-peer
+git clone https://github.com/libp2p/universal-connectivity.git
+cd universal-connectivity/py-peer
 
 # Create virtual environment
 python -m venv .venv
@@ -746,10 +738,14 @@ python main.py --api --nick MyNode --api-port 8765
 
 ### RAG Assistant Configuration
 
-The `/api/v1/ask` endpoint is available when vector store + LLM dependencies are configured.
+The `/api/v1/ask` endpoint is optional and is not installed with the base
+package. It becomes available when the RAG extra, a vector store, and a Groq
+API key are configured.
 
-1. Install additional packages:
+1. Install the optional dependencies:
 ```bash
+uv pip install -e '.[rag]'          # Groq SDK only
+# or install the vector-store build stack as well:
 pip install -r requirements-rag.txt
 ```
 2. Build vector store:
@@ -922,7 +918,7 @@ python main.py --ui --nick YourName --port 8081
 
 **6. RAG Assistant Unavailable (`/api/v1/ask` returns 503)**
 - Build vector store via `llm/codes/build_vectorstore.py`
-- Install RAG dependencies: `pip install -r requirements-rag.txt`
+- Install the RAG extra: `uv pip install -e '.[rag]'` (or `pip install -r requirements-rag.txt` for the vector-store build stack)
 - Set `GROQ_API_KEY` environment variable
 
 ### Debug Mode

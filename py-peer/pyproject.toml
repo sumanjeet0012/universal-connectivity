@@ -14,8 +14,15 @@ dependencies = [
     "trio_asyncio",
     "python-dotenv>=1.2.2",
     "platformdirs>=4.0.0",
-    "groq>=1.0.0",
     "tornado>=6.5.5"
+]
+
+# The Groq SDK is only used by the optional RAG assistant (POST /api/v1/ask).
+# Install with ``uv pip install -e '.[rag]'`` (or requirements-rag.txt) when
+# the vector store and LLM endpoint are actually needed.
+[project.optional-dependencies]
+rag = [
+    "groq>=1.0.0",
 ]
 
 
@@ -111,6 +118,8 @@ replace_imports_with_any = [
     "langchain_chroma.*",
     "langchain_community.*",
     "langchain_text_splitters.*",
+    "groq",
+    "groq.*",
 ]
 
 # Tornado dispatches ``get``/``post`` handlers with route arguments that are

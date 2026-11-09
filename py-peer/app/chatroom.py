@@ -108,14 +108,23 @@ def _snapshot_keys(mapping: Mapping[Any, Any], attempts: int = 3) -> list[str]:
 
     ``pubsub.peers`` and ``ChatRoom.subscriptions`` are mutated by the trio
     thread while Tornado handlers read them. A plain ``list(mapping)`` can
-    raise RuntimeError if the dict changes size mid-copy, so retry the
-    cheap snapshot instead of leaking a 500 to the API client.
+    raise RuntimeError("dictionary changed size during iteration") if the dict
+    changes size mid-copy, so retry the cheap snapshot instead of leaking a
+    500 to the API client. Only the specific "changed size" RuntimeError is
+    swallowed; unrelated RuntimeErrors propagate normally.
     """
+    _CHANGED = "changed size during iteration"
     for _ in range(attempts):
         try:
             return [str(key) for key in mapping.keys()]
-        except RuntimeError:
+        except RuntimeError as exc:
+            if _CHANGED not in str(exc):
+                raise
             continue
+    logger.warning(
+        "_snapshot_keys: dict mutated on every attempt (%d); returning empty list",
+        attempts,
+    )
     return []
 
 

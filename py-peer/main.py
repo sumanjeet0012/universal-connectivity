@@ -55,15 +55,6 @@ def setup_logging(ui_mode: bool = False) -> None:
     )
 
 logger = logging.getLogger("main")
-logging.getLogger("headless").setLevel(logging.DEBUG)  # Enable debug for headless service
-logging.getLogger("chatroom").setLevel(logging.DEBUG)  # Enable debug for chatroom
-logging.getLogger("libp2p.transport").setLevel(logging.DEBUG)
-logging.getLogger("libp2p.security").setLevel(logging.DEBUG)
-logging.getLogger("libp2p.mux").setLevel(logging.DEBUG)
-logging.getLogger("libp2p.stream").setLevel(logging.DEBUG)
-logging.getLogger("libp2p.pubsub").setLevel(logging.DEBUG)
-logging.getLogger("libp2p.discovery").setLevel(logging.DEBUG)
-logging.getLogger("libp2p.kad_dht").setLevel(logging.DEBUG)
 
 def run_headless_in_thread(
     headless_service: Any, ready_event: Any
@@ -479,8 +470,19 @@ def main() -> None:
     # Set debug level if verbose flag is provided
     if args.verbose:
         logger.setLevel(logging.DEBUG)
-        logging.getLogger("libp2p").setLevel(logging.DEBUG)
-        logging.getLogger("headless").setLevel(logging.DEBUG)
+        for _name in (
+            "headless",
+            "chatroom",
+            "libp2p",
+            "libp2p.transport",
+            "libp2p.security",
+            "libp2p.mux",
+            "libp2p.stream",
+            "libp2p.pubsub",
+            "libp2p.discovery",
+            "libp2p.kad_dht",
+        ):
+            logging.getLogger(_name).setLevel(logging.DEBUG)
         logger.debug("Debug logging enabled")
     
     # Print routes and exit early if requested

@@ -1238,7 +1238,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "base58" },
-    { name = "groq" },
     { name = "janus" },
     { name = "libp2p" },
     { name = "platformdirs" },
@@ -1250,10 +1249,15 @@ dependencies = [
     { name = "trio-asyncio" },
 ]
 
+[package.optional-dependencies]
+rag = [
+    { name = "groq" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "base58" },
-    { name = "groq", specifier = ">=1.0.0" },
+    { name = "groq", marker = "extra == 'rag'", specifier = ">=1.0.0" },
     { name = "janus", specifier = ">=1.0.0" },
     { name = "libp2p", git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=fbf4ff94d7201edfa90992574c4879738f2dab96" },
     { name = "platformdirs", specifier = ">=4.0.0" },
@@ -1264,6 +1268,7 @@ requires-dist = [
     { name = "trio", specifier = ">=0.22.0" },
     { name = "trio-asyncio" },
 ]
+provides-extras = ["rag"]
 
 [[package]]
 name = "pycparser"

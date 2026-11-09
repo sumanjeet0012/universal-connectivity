@@ -50,7 +50,7 @@ class BaseWebSocketHandler(tornado.websocket.WebSocketHandler):
     def open(self, *args: str, **kwargs: str) -> None:
         self._running = True
         logger.info(f"WS opened: {self.__class__.__name__}")
-        self._task = asyncio.get_event_loop().create_task(self._push_loop())
+        self._task = asyncio.create_task(self._push_loop())
 
     def on_close(self) -> None:
         self._running = False

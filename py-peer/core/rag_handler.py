@@ -13,13 +13,24 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import tornado.web
-from groq import AsyncGroq
-from groq.types.chat import ChatCompletionUserMessageParam
+
+if TYPE_CHECKING:
+    from groq import AsyncGroq
+    from groq.types.chat import ChatCompletionUserMessageParam
 
 log = logging.getLogger("rag_handler")
+
+RAG_INSTALL_HINT = (
+    "Groq SDK not installed. Install the RAG extra with "
+    "`uv pip install -e '.[rag]'` or `pip install -r requirements-rag.txt`."
+)
+
+
+class RagDependencyError(RuntimeError):
+    """Raised when an optional RAG dependency is missing at runtime."""
 
 # Resolve the index from the project root, not from this module's directory.
 # ``core/rag_handler.py`` is one level below the repository root.
@@ -30,11 +41,16 @@ VECTOR_STORE_DIR = str(
 GROQ_MODEL       = "llama-3.3-70b-versatile"
 _groq_client     = None
 TOP_K            = 4
+MAX_QUESTION_LEN = 2000  # characters; prevents token-limit abuse and cost blowup
 
 
-def _get_groq_client() -> AsyncGroq:
+def _get_groq_client() -> "AsyncGroq":
     global _groq_client
     if _groq_client is None:
+        try:
+            from groq import AsyncGroq
+        except ImportError as exc:
+            raise RagDependencyError(RAG_INSTALL_HINT) from exc
         _groq_client = AsyncGroq()
     return _groq_client
 
@@ -143,6 +159,14 @@ class AskHandler(tornado.web.RequestHandler):
             }))
             return
 
+        if len(question) > MAX_QUESTION_LEN:
+            self.set_status(400)
+            self.finish(json.dumps({
+                "success": False,
+                "error": f"'question' must be at most {MAX_QUESTION_LEN} characters.",
+            }))
+            return
+
         # Retrieve relevant chunks from ChromaDB
         try:
             chunks = self.vectorstore.similarity_search(question, k=TOP_K)
@@ -165,7 +189,7 @@ class AskHandler(tornado.web.RequestHandler):
         # Call Groq (llama-3.3-70b-versatile)
         try:
             messages: list[ChatCompletionUserMessageParam] = [
-                ChatCompletionUserMessageParam(role="user", content=prompt)
+                {"role": "user", "content": prompt}
             ]
             completion = await _get_groq_client().chat.completions.create(
                 model=GROQ_MODEL,
@@ -173,12 +197,20 @@ class AskHandler(tornado.web.RequestHandler):
             )
             content = completion.choices[0].message.content
             answer = content.strip() if content else ""
+        except RagDependencyError as exc:
+            log.error("%s", exc)
+            self.set_status(503)
+            self.finish(json.dumps({
+                "success": False,
+                "error": str(exc),
+            }))
+            return
         except Exception as exc:
             log.error("Groq error: %s", exc)
             self.set_status(502)
             self.finish(json.dumps({
                 "success": False,
-                "error": f"LLM backend error: {exc}",
+                "error": "LLM request failed. Please try again later.",
             }))
             return
 

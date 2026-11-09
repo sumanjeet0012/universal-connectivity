@@ -131,12 +131,14 @@ Start the peer:
 python main.py
 ```
 
-If you want a specific mode, you can pass flags such as `--ui`, `--kivy`, or `--api`. For example:
+If you want a specific mode, you can pass flags such as `--ui` or `--api`. For example:
 
 ```bash
 python main.py --ui
+```
 
 ## Getting started: Nim
+
 ```
 cd nim-peer
 nimble build

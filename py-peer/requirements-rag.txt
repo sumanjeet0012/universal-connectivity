@@ -13,3 +13,7 @@ langchain-huggingface>=0.3.0
 langchain-chroma>=0.2.0
 langchain-text-splitters>=0.3.0
 sentence-transformers>=3.0.0
+# The Groq SDK backs the /api/v1/ask completion call. It is also available as
+# the ``rag`` extra (uv pip install -e '.[rag]'), but the vector-store build
+# still needs the packages above.
+groq>=1.0.0
