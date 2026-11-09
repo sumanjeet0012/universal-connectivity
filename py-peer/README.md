@@ -701,7 +701,6 @@ python main.py --api --nick MyNode --api-port 8765
 
 - Base URL: `http://localhost:8765/api/v1`
 - Route listing: `python main.py --api-routes`
-- Full endpoint docs: see **`API_REFERENCE.md`**
 
 ### RAG Assistant Configuration
 
@@ -783,7 +782,6 @@ py-peer/
 ├── Dockerfile           # Multi-stage runtime image
 ├── compose.yaml         # Compose service, volume, health check
 ├── .dockerignore        # Build-context exclusions
-├── API_REFERENCE.md     # Full API docs
 ├── api/                 # Tornado API handlers (v1)
 ├── app/                 # Runtime, services, events, storage, paths
 ├── pyproject.toml       # Project configuration & dependencies

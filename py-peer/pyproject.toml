@@ -62,7 +62,6 @@ only-include = [
     "compose.yaml",
     ".dockerignore",
     "README.md",
-    "API_REFERENCE.md",
     "pyproject.toml",
     "uv.lock",
     ".python-version",
