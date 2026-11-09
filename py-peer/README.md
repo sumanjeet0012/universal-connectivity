@@ -12,6 +12,7 @@ This is the Python implementation of the [Universal Connectivity][UNIV_CONN] app
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+- [Docker Deployment](#docker-deployment)
 - [Usage](#usage)
 - [User Interfaces](#user-interfaces)
 - [Configuration](#configuration)
@@ -221,6 +222,156 @@ source .venv/bin/activate  # Linux/macOS
 # Install the package
 pip install -e .
 ```
+
+## 🐳 Docker Deployment
+
+The `Dockerfile` and `compose.yaml` run the peer in headless mode with the
+Tornado REST/WebSocket API. The React frontend is **not** bundled into the
+Python image; deploy it separately and point it at the published API.
+
+### Build and run
+
+```bash
+cd py-peer
+
+docker compose build
+docker compose up -d
+docker compose logs -f
+docker compose ps
+```
+
+Stop and remove the container while keeping data:
+
+```bash
+docker compose down          # keeps the named volume
+```
+
+Delete the peer identity, history, and logs as well:
+
+```bash
+docker compose down -v       # DESTRUCTIVE: removes the data volume
+```
+
+Restart with the same volume:
+
+```bash
+docker compose up -d
+```
+
+Building directly without Compose works too:
+
+```bash
+docker build -t py-peer:local .
+docker run -d --name uc-peer --init \
+  -e UC_DATA_DIR=/data \
+  -v uc-data:/data \
+  -p 4001:4001/tcp \
+  -p 127.0.0.1:8765:8765 \
+  py-peer:local \
+  --api --api-host 0.0.0.0 --announce-host 192.168.1.50 --nick alice
+```
+
+The image is multi-stage: `uv` installs exactly `uv.lock` into `/app/.venv`
+in a builder stage, and only the virtual environment plus application code
+reach the final `python:3.12-slim-bookworm` image. Build tools and `git` stay
+in the builder.
+
+### Compose settings
+
+Compose reads these variables from the shell or a local `.env` file. The
+defaults are safe for same-host testing; set the network-specific values for
+real peers.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `UC_NICKNAME` | `docker-peer` | Peer nickname |
+| `UC_PEER_PORT` | `4001` | libp2p TCP port, inside and published |
+| `UC_API_PORT` | `8765` | Tornado API port, inside and published |
+| `UC_API_PUBLISH_HOST` | `127.0.0.1` | Host interface for the API mapping |
+| `UC_ANNOUNCE_HOST` | `127.0.0.1` | Host advertised to other peers |
+| `UC_DATA_DIR` | `/data` | Set by Compose; backed by the named volume |
+
+Example `.env` (gitignored):
+
+```dotenv
+UC_NICKNAME=alice
+UC_PEER_PORT=4001
+UC_API_PORT=8765
+UC_API_PUBLISH_HOST=127.0.0.1
+UC_ANNOUNCE_HOST=192.168.1.50
+```
+
+### Data and permissions
+
+The container runs as the unprivileged user `uc` (UID/GID `10001`). Durable
+state is stored only on the `/data` volume:
+
+```text
+/data/
+├── identity/peer.key          # stable peer identity, survives recreation
+├── history.db                 # SQLite message history
+└── logs/system_messages.txt   # rotating application log
+```
+
+A named volume inherits `/data` ownership from the image, so
+`docker compose down` followed by `up -d` keeps the same peer ID and message
+history. If you use a bind mount instead, chown it first:
+
+```bash
+mkdir -p ./peer-data
+sudo chown -R 10001:10001 ./peer-data
+```
+
+### Ports and advertised addresses
+
+Only TCP is published. QUIC, WebTransport, and UDP are not enabled, so there
+is no UDP mapping to add.
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| `4001` | TCP | libp2p peer transport |
+| `8765` | TCP | REST + WebSocket API |
+
+Inside the container the listener binds `/ip4/0.0.0.0/tcp/4001`, but a
+wildcard address is not a dial target. The peer rewrites it using
+`--announce-host`, so the advertised multiaddr is:
+
+```text
+/ip4/<UC_ANNOUNCE_HOST>/tcp/<UC_PEER_PORT>/p2p/<peer-id>
+```
+
+With the default `UC_ANNOUNCE_HOST=127.0.0.1`, the address is only reachable
+from the same host. For peers on a LAN, set `UC_ANNOUNCE_HOST` to the Docker
+host's LAN IP and make sure the host firewall allows TCP 4001. Container IPs
+(for example `172.17.0.x`) must never be advertised outside the Docker
+network. Internet reachability also requires a port forward on the router;
+automatic NAT traversal/relay is not implemented. On Linux, host networking is
+an alternative when you do not want port mapping:
+
+```bash
+docker run --network host ... py-peer:local \
+  --api --api-host 127.0.0.1 --announce-host 192.168.1.50
+```
+
+### API exposure
+
+The API has no authentication and returns wildcard CORS headers. Compose
+therefore publishes it on `127.0.0.1` by default even though the container
+listener binds `0.0.0.0` (required for Docker's port forwarding). Only set
+`UC_API_PUBLISH_HOST=0.0.0.0` behind a firewall and an authenticating reverse
+proxy.
+
+### Health, shutdown, and logs
+
+The built-in health check runs `healthcheck.py`, which parses
+`GET /api/v1/service/status` and requires `ready=true`, `running=true`, and
+`failed=false`. A plain HTTP 200 is not enough: the API can answer before the
+libp2p host is ready.
+
+Compose runs with `init: true`. `docker stop`/`docker compose stop` sends
+SIGTERM, `main.py` requests a graceful shutdown, joins the runtime thread, and
+exits 0. Compose rotates Docker logs at 10 MB with three files; the application
+also rotates `<data-dir>/logs/system_messages.txt`.
 
 ## 🎯 Usage
 
@@ -520,17 +671,23 @@ the peer never starts half-configured.
 ```
 py-peer/
 ├── main.py              # Entry point & argument parsing
-├── ui.py               # Textual TUI implementation
-├── headless.py         # Background service & state management
-├── chatroom.py         # Chat room logic & topic handling
+├── ui.py                # Textual TUI implementation
+├── headless.py          # Background service & state management
+├── chatroom.py          # Chat room logic & topic handling
 ├── tornado_server.py    # REST + WebSocket server
 ├── rag_handler.py       # RAG assistant endpoint
+├── healthcheck.py       # Container readiness probe
+├── Dockerfile           # Multi-stage runtime image
+├── compose.yaml         # Compose service, volume, health check
+├── .dockerignore        # Build-context exclusions
 ├── API_REFERENCE.md     # Full API docs
 ├── api/                 # Tornado API handlers (v1)
+├── app/                 # Runtime, services, events, storage, paths
+├── tests/               # unittest suite
 ├── py-peer-frontend/    # React + Vite frontend
-├── pyproject.toml      # Project configuration & dependencies
-├── uv.lock            # Dependency lock file
-└── README.md          # This file
+├── pyproject.toml       # Project configuration & dependencies
+├── uv.lock              # Dependency lock file
+└── README.md            # This file
 ```
 
 ### Key Classes

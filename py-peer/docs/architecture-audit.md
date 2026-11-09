@@ -1,6 +1,6 @@
-# Universal Connectivity py-peer — Architecture Audit (Phases 0–6)
+# Universal Connectivity py-peer — Architecture Audit (Phases 0–7)
 
-**Status:** Phase 0–6 deliverables
+**Status:** Phase 0–7 deliverables
 **Audit date:** 2026-11-08
 **Repository:** `universal-connectivity` (`py-peer` is the subject of this audit)
 **Baseline revision:** `dcfbf07` plus the current uncommitted working tree; Phase 1
@@ -165,7 +165,8 @@ Entry points are all in `main.py:main()`:
 
 ### 2.4 What does *not* exist
 
-Verified absent in the py-peer working tree:
+Verified absent in the py-peer working tree at the Phase 0 baseline (Phase 7
+later added the container files; see §21):
 
 - Dockerfile, Docker Compose file, `.dockerignore` for py-peer.
 - Buildozer/spec/python-for-android/Android packaging files.
@@ -1040,20 +1041,18 @@ Delivered:
 - README documents only the Textual TUI, simple CLI, API, and headless modes;
   Android remains an explicit, unstarted decision.
 
-### Phase 6 — UI adapters
+### Phase 6 — UI adapters (done — see §20)
 
-- Textual uses service interfaces.
-- React keeps HTTP/WS contracts; add reconnect/error tests where practical.
-- Add headless mode without UI dependencies.
-- Define API authentication/origin policy before remote exposure.
+Delivered: Textual and CLI consume the runtime EventBus; Textual imports
+lazily; the API binds loopback by default with an explicit trust boundary;
+React retries REST/WebSockets; adapter and API-security tests were added.
 
-### Phase 7 — Docker/Compose
+### Phase 7 — Docker/Compose (done — see §21)
 
-- Add Dockerfile, Compose, `.dockerignore`, health check, persistent `/data`
-  volume.
-- Publish only required ports; document TCP vs UDP needs and advertised
-  addresses under bridge/host networking.
-- Test recreation preserves identity and data.
+Delivered: multi-stage locked build, unprivileged runtime, `/data` volume,
+readiness-based health check, Compose service with only TCP 4001/8765, graceful
+SIGTERM, persistence across recreation, and documented address/network
+caveats.
 
 ### Phase 8 — Validation/release
 
@@ -1224,7 +1223,7 @@ Behavior intentionally preserved:
 | 6 | IPv6 loopback | `--listen-addr /ip6/::1/tcp/<p>` | bind and advertise IPv6 | **PASS** — `transport_addrs=['/ip6/::1/tcp/56126']`; advertised `/ip6/::1/tcp/56126/p2p/<id>` |
 | 7 | Bad bind (non-local IP) | `--listen-addr /ip4/192.0.2.1/tcp/<p>` | startup failure, not a zombie | **PASS** — probe warns `not assigned`; `_verify_listeners` raises; service `failed=True`, thread exits |
 | 8 | CLI plumbing | `--headless --listen-addr ... --announce-addr ...` | flags reach the service | **PASS** — log shows configured listen + explicit announce; listener active; SIGINT exits 0 |
-| 9 | Docker / container | none | must be explicit exception | **NOT RUN** — see §15.5 |
+| 9 | Docker / container | bridge network, published TCP 4001 | start, health, announce, shutdown | **PASS (Phase 7)** — see §21; container listener `/ip4/0.0.0.0/tcp/4001`, advertised `/ip4/<announce-host>/tcp/4001/p2p/<id>` |
 | 10 | NAT / public internet | none | must be explicit exception | **NOT RUN** — see §15.5 |
 | 11 | QUIC (experiment only) | `--listen-addr /ip4/127.0.0.1/udp/<p>/quic-v1` on two peers | bind, advertise, connect, publish | **PASS (experimental)** — `A transports: ['QUICTransport']`; advertised `/ip4/127.0.0.1/udp/52798/quic-v1/p2p/<id>`; connected; received `quic-hello`. Not exposed in the app because a QUIC-only listen list removes TCP dialing (§15.1) |
 | 12 | Ephemeral port | `--listen-addr /ip4/127.0.0.1/tcp/0` | bind an OS-assigned port and advertise it | **PASS** — `transport_addrs=['/ip4/127.0.0.1/tcp/57444']`; advertised the assigned port |
@@ -1235,10 +1234,12 @@ a second physical machine can reach it.
 
 ### 15.5 Explicit exceptions and gaps
 
-- **Docker/container connectivity is not tested** and is deferred to Phase 7.
-  Binding `0.0.0.0` inside a container advertises a container-internal IP unless
-  the operator passes `--announce-addr` with a host-reachable address/port
-  mapping. No port mapping, health check, or NAT correction exists.
+- **Docker/container connectivity was not tested in Phase 1**; Phase 7 later
+  validated the bridge-network case (§21). Binding `0.0.0.0` inside a container
+  still advertises a container-internal IP unless the operator sets
+  `--announce-host` (or `--announce-addr`) to a host-reachable address. Phase 7
+  supplies the port mapping and readiness health check; it does not add NAT
+  correction or relay.
 - **External/NAT/public reachability is not tested.** There is no UPnP, AutoNAT,
   relay, or public-IP discovery. Public deployments must set an explicit announce
   address and ensure the port is forwarded.
@@ -1288,7 +1289,9 @@ Runtime scenarios 1–8 are recorded in §15.4 with their observed log lines.
 - [x] Listener startup is verified rather than assumed, and failure is fatal.
 - [x] Same-machine connectivity is tested (two real hosts, publish/receive).
 - [x] LAN-style connectivity is tested with a private address.
-- [x] Docker/NAT gaps are documented as explicit exceptions (Phase 7).
+- [x] Docker/NAT gaps were documented; Phase 7 validated Docker bridge
+      networking and host-reachable announcement (§21). NAT traversal remains
+      out of scope.
 - [x] Address decisions are logged at startup and exposed through the API.
 
 **Phase 1 conclusion:** TCP transport and announced-address correctness are
@@ -1882,3 +1885,152 @@ python main.py --api --nick smoke6 --port 0 --api-port <ephemeral>
   subscription, dispatch, and teardown.
 - [ ] The API remains unauthenticated when explicitly exposed; authentication
   is a future adapter/security phase.
+
+## 21. Phase 7 — Docker and Docker Compose (implemented)
+
+**Status:** implemented and verified, 2026-11-09.
+**Baseline:** `dd3ddd5` (Phase 6).
+**Scope:** container deployment of the headless runtime + HTTP/WebSocket API.
+The React frontend is deliberately not bundled.
+
+### 21.1 Files
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Multi-stage build; locked runtime environment; unprivileged runtime image. |
+| `.dockerignore` | Keeps `.git`, `.venv`, caches, secrets, local data, tests, and frontend artifacts out of the build context. |
+| `compose.yaml` | One `py-peer` service, named `/data` volume, health check, restart policy, log rotation, published ports. |
+| `healthcheck.py` | Standard-library readiness probe for `/api/v1/service/status`. |
+| `tests/test_docker_assets.py` | Static packaging checks plus real health-probe behaviour tests. |
+
+### 21.2 Image design
+
+- Builder stage: `python:3.12-slim-bookworm` + pinned `uv` copied from
+  `ghcr.io/astral-sh/uv:0.13.5`. It installs `git`, `build-essential`, and
+  `libgmp-dev`, then runs `uv sync --frozen --no-dev --no-install-project`.
+  `uv.lock` is the source of truth, including the libp2p fork commit.
+- Runtime stage: `python:3.12-slim-bookworm` with only `ca-certificates` and
+  `libgmp10` (needed by `fastecdsa`). The builder's `.venv` and the application
+  source are copied in; build tools and `git` do not reach the final image.
+- The image runs as `uc` (UID/GID `10001`), not root.
+- `UC_DATA_DIR=/data` and `VOLUME ["/data"]` keep identity, SQLite history, and
+  the system log out of `/app`.
+- `ENTRYPOINT ["python", "main.py"]`; the default command is
+  `--api --api-host 0.0.0.0 --nick docker-peer`. This is the headless runtime
+  plus the API, which is what the health check needs.
+- Only TCP is exposed: `4001/tcp` (libp2p) and `8765/tcp` (API). QUIC,
+  WebTransport, and UDP are not configured, so no UDP mapping exists.
+- No secrets, `.env`, local database, or frontend build output are copied.
+
+### 21.3 Compose design
+
+- `restart: unless-stopped`, `init: true` (signal forwarding and zombie reaping).
+- Named volume `uc-data` mounted at `/data`.
+- API port published on host loopback by default
+  (`UC_API_PUBLISH_HOST=127.0.0.1`); the container listener binds `0.0.0.0`
+  because Docker port forwarding requires it.
+- Peer TCP port published on all host interfaces; the host firewall remains the
+  operator's control.
+- `UC_DATA_DIR`, `UC_HEALTHCHECK_URL`, `UC_NICKNAME`, `UC_PEER_PORT`,
+  `UC_API_PORT`, `UC_API_PUBLISH_HOST`, and `UC_ANNOUNCE_HOST` are configurable.
+- Health check runs `python /app/healthcheck.py` every 30 s after a 30 s start
+  period, with three retries.
+- Docker `json-file` logs rotate at 10 MB with three files.
+
+### 21.4 Readiness health check
+
+The API can answer HTTP before the libp2p host is ready, so a 200 response is
+not sufficient. `healthcheck.py` parses the JSON body and returns success only
+when `data.ready` and `data.running` are true and `data.failed` is false.
+`tests/test_docker_assets.py` verifies healthy, not-ready, not-running, failed,
+malformed, HTTP-error, and connection-failure cases.
+
+### 21.5 Networking and advertised addresses
+
+Inside the container the listener is `/ip4/0.0.0.0/tcp/4001`. The application's
+`AddrsFactory` rewrites that wildcard using `--announce-host`, so the advertised
+multiaddr is `/ip4/<UC_ANNOUNCE_HOST>/tcp/4001/p2p/<peer-id>`. Container IPs
+such as `172.17.0.x` are never advertised by default.
+
+Verified with `--announce-host 192.0.2.10`:
+
+```text
+listen_addrs  ["/ip4/0.0.0.0/tcp/4001"]
+multiaddrs    ["/ip4/192.0.2.10/tcp/4001/p2p/12D3KooW..."]
+```
+
+For bridge networking, `UC_ANNOUNCE_HOST` must be a host address that peers can
+actually dial, and the host must publish TCP 4001. For internet peers the router
+must also forward that port. No UPnP, AutoNAT, relay, or public-IP discovery is
+implemented. With the default `127.0.0.1`, the address is same-host only.
+
+### 21.6 Verification
+
+```text
+docker compose config
+  -> valid; command/env/ports/volume/healthcheck rendered
+
+docker build -t py-peer:local .
+  -> success (linux/arm64, Docker Desktop)
+
+docker run ... py-peer:local --api --api-host 0.0.0.0 ...
+docker exec <container> id
+  -> uid=10001(uc) gid=10001(uc)
+
+docker inspect --format '{{.State.Health.Status}}'
+  -> healthy
+GET /api/v1/service/status
+  -> state=ready, ready=true, running=true, failed=false
+
+POST /api/v1/messages {"message":"phase7 persistence check"}
+GET  /api/v1/messages/universal-connectivity
+  -> total=1 after container restart and after docker rm + re-run
+
+docker stop -t 15 <container>
+  -> "Received signal 15; requesting graceful shutdown..."
+  -> exit code 0
+
+docker compose down          # volume retained
+docker compose up -d
+  -> same peer ID and history
+
+docker compose stop
+  -> exit code 0
+
+.venv/bin/python -m unittest discover -s tests
+  -> 164 tests, OK (154 after Phase 6 + 10 container tests)
+```
+
+### 21.7 Acceptance criteria (brief §11)
+
+- [x] The image builds from the repository context without local `.venv`,
+  caches, secrets, or frontend artifacts.
+- [x] The container starts the headless runtime with the API adapter.
+- [x] The container runs as non-root (`uid=10001`).
+- [x] The health check reflects actual runtime readiness, not just HTTP 200.
+- [x] Durable state is stored on the mounted `/data` volume.
+- [x] Peer identity and message history survive container restart and
+  recreation (`docker rm` + run, and `compose down` + `up`).
+- [x] SIGTERM produces a graceful shutdown and exit code 0.
+- [x] Only required TCP ports are exposed/published (`4001`, `8765`).
+- [x] Advertised multiaddrs use the operator-supplied host address, not the
+  container IP.
+- [x] Build, run, logs, `ps`, `down`, persistence, and address caveats are
+  documented in `README.md`.
+
+### 21.8 Explicit exceptions
+
+- [ ] NAT/public-internet reachability is not verified. No relay, AutoNAT, UPnP,
+  or public-IP discovery exists; a router port forward and a reachable
+  `UC_ANNOUNCE_HOST` are required.
+- [ ] Cross-machine LAN testing was not possible; the address rewrite was
+  verified, but no second physical host dialed the container.
+- [ ] Only `linux/arm64` on Docker Desktop was built and run. Multi-arch and
+  rootless/CI Docker were not tested; there is no CI workflow.
+- [ ] The API remains unauthenticated and wildcard-CORS. Publishing it on a
+  non-loopback interface requires an authenticating reverse proxy and firewall.
+- [ ] The build requires network access for the base images, PyPI, and the
+  libp2p git fork. `uv.lock` pins the resolved versions and fork commit, but it
+  is not an offline build.
+- [ ] The React frontend is not served by this image; it remains a separate
+  deployment.

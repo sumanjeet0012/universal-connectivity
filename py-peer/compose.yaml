@@ -1,0 +1,67 @@
+name: universal-connectivity
+
+services:
+  py-peer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: py-peer:local
+    container_name: uc-peer
+    restart: unless-stopped
+    # Docker's init reaps zombies and forwards SIGTERM to the Python process;
+    # main.py then requests a graceful runtime shutdown and joins the trio
+    # thread before exiting.
+    init: true
+
+    environment:
+      # Durable identity, history, and logs live on the named volume.
+      UC_DATA_DIR: /data
+      # The API is unauthenticated. It listens on 0.0.0.0 *inside* the
+      # container, but the port mapping below publishes it on host loopback
+      # only unless UC_API_PUBLISH_HOST is changed deliberately.
+      UC_HEALTHCHECK_URL: http://127.0.0.1:${UC_API_PORT:-8765}/api/v1/service/status
+      UC_NICKNAME: ${UC_NICKNAME:-docker-peer}
+      UC_PEER_PORT: ${UC_PEER_PORT:-4001}
+      UC_API_PORT: ${UC_API_PORT:-8765}
+      # Set this to the host LAN/public IP that other peers can dial. The
+      # default is loopback, which is only useful for same-host testing.
+      UC_ANNOUNCE_HOST: ${UC_ANNOUNCE_HOST:-127.0.0.1}
+
+    command:
+      - --api
+      - --api-host
+      - 0.0.0.0
+      - --api-port
+      - ${UC_API_PORT:-8765}
+      - --port
+      - ${UC_PEER_PORT:-4001}
+      - --announce-host
+      - ${UC_ANNOUNCE_HOST:-127.0.0.1}
+      - --nick
+      - ${UC_NICKNAME:-docker-peer}
+
+    ports:
+      # API: loopback-only by default. To expose it, set
+      # UC_API_PUBLISH_HOST=0.0.0.0 only behind an authenticating proxy/firewall.
+      - "${UC_API_PUBLISH_HOST:-127.0.0.1}:${UC_API_PORT:-8765}:${UC_API_PORT:-8765}"
+      # Peer transport: TCP only. QUIC/WebTransport/UDP are not enabled.
+      - "${UC_PEER_PORT:-4001}:${UC_PEER_PORT:-4001}/tcp"
+
+    volumes:
+      - uc-data:/data
+
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  uc-data:
