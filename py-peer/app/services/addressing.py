@@ -152,6 +152,17 @@ class AddressService:
                         if announce_is_v6:
                             continue
                         text = text.replace("/ip4/0.0.0.0/", f"/ip4/{host}/", 1)
+                    elif not announce_is_v6 and (
+                        "certhash" in protocols
+                        or "webtransport" in protocols
+                        or "webrtc-direct" in protocols
+                    ):
+                        # For transports requiring certhashes that bind local interfaces,
+                        # also advertise the public announce_host with the bound certhashes.
+                        public_text = text.replace(f"/ip4/{value}/", f"/ip4/{host}/", 1)
+                        if public_text not in seen:
+                            seen.add(public_text)
+                            advertised.append(multiaddr.Multiaddr(public_text))
                 elif "ip6" in protocols:
                     value = addr.value_for_protocol("ip6")
                     if value in ("::", "::0"):
