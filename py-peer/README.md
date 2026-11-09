@@ -182,7 +182,7 @@ and `fastecdsa` ship native or platform-specific dependencies.
 
 | Target | Status | Notes |
 |---|---|---|
-| macOS 14+ (arm64) | **Tested** | Full unit suite, real host lifecycle, wheel install, Docker Desktop host |
+| macOS 14+ (arm64) | **Tested** | Real host lifecycle, wheel install, Docker Desktop host |
 | Linux arm64 (Debian bookworm, Python 3.12, container) | **Tested** | Headless runtime, health check, two-container connectivity, persistence |
 | Linux x86_64 | Expected, not tested in this repository | Same Python 3.12 requirements; verify native wheels before release |
 | Windows 11 | Expected, not tested in this repository | TCP only; no native test, no service installer |
@@ -244,9 +244,8 @@ pip install -e .
 
 `uv build` produces a small runtime wheel and a source distribution. The wheel
 contains the root runner modules plus `api/`, `app/`, and `llm/`; it excludes
-the React workspace, `node_modules`, tests, docs, Docker assets, local
-databases, and caches. The sdist additionally contains tests, docs, the Docker
-files, and `uv.lock`.
+the React workspace, `node_modules`, Docker assets, local databases, and
+caches. The sdist additionally contains the Docker files and `uv.lock`.
 
 ```bash
 cd py-peer
@@ -787,7 +786,6 @@ py-peer/
 ├── API_REFERENCE.md     # Full API docs
 ├── api/                 # Tornado API handlers (v1)
 ├── app/                 # Runtime, services, events, storage, paths
-├── tests/               # unittest suite
 ├── pyproject.toml       # Project configuration & dependencies
 ├── uv.lock              # Dependency lock file
 └── README.md            # This file

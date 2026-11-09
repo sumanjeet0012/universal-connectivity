@@ -27,7 +27,7 @@ build-backend = "hatchling.build"
 
 # The project uses a flat layout: runnable modules live at the repository root
 # next to the ``api``, ``app``, and ``llm`` packages. ``only-include`` keeps the
-# large React workspace, tests, local data, and caches out of the wheel.
+# large React workspace, local data, and caches out of the wheel.
 [tool.hatch.build.targets.wheel]
 only-include = [
     "main.py",
@@ -57,8 +57,6 @@ only-include = [
     "api",
     "app",
     "llm",
-    "tests",
-    "docs",
     "assets",
     "Dockerfile",
     "compose.yaml",

@@ -33,9 +33,7 @@ logs/
 node_modules/
 dist/
 
-# Tests, docs, and repository-only files
-tests/
-docs/
+# Repository-only files
 assets/
 *.md
 !README.md
