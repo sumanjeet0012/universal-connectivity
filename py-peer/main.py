@@ -380,7 +380,7 @@ def main() -> None:
         dest="listen_addrs",
         metavar="MULTIADDR",
         help="Multiaddr to listen on (repeatable). Default: listens on "
-             "all supported transports (TCP, WS, QUIC, WebTransport, WebRTC-Direct)"
+             "all supported transports (TCP, WS, QUIC)"
     )
     parser.add_argument(
         "--announce-addr",

@@ -59,19 +59,13 @@ class AddressService:
                 "/ip4/0.0.0.0/tcp/0",
                 "/ip4/0.0.0.0/tcp/0/ws",
                 "/ip4/0.0.0.0/udp/0/quic-v1",
-                "/ip4/0.0.0.0/udp/0/quic-v1/webtransport",
             ]
-            if has_webrtc_support():
-                raw.append("/ip4/0.0.0.0/udp/0/webrtc-direct")
         else:
             raw = [
                 f"/ip4/0.0.0.0/tcp/{base_port}",
                 f"/ip4/0.0.0.0/tcp/{base_port}/ws",
                 f"/ip4/0.0.0.0/udp/{base_port}/quic-v1",
-                f"/ip4/0.0.0.0/udp/{base_port + 1}/quic-v1/webtransport",
             ]
-            if has_webrtc_support():
-                raw.append(f"/ip4/0.0.0.0/udp/{base_port + 2}/webrtc-direct")
 
         resolved = []
         for item in raw:

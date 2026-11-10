@@ -12,6 +12,7 @@ prompt → send to Groq (llama-3.3-70b-versatile).
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -113,7 +114,7 @@ class AskHandler(tornado.web.RequestHandler):
     """
     POST /api/v1/ask
     Body:     {"question": "how does DHT routing work?"}
-    Response: {"answer": "...", "sources": ["file1.py", "spec.md"]}
+    Response: standard ApiResponse envelope containing {"answer": "...", "sources": [...]}
     """
 
     vectorstore: Any
@@ -131,40 +132,60 @@ class AskHandler(tornado.web.RequestHandler):
         self.set_status(204)
         self.finish()
 
+    def send_success(self, data: Any = None, status: int = 200) -> None:
+        self.set_status(status)
+        self.finish(json.dumps({
+            "success": True,
+            "data": data,
+            "error": None,
+            "timestamp": time.time(),
+        }))
+
+    def send_error_response(
+        self,
+        message: str,
+        status: int = 400,
+        detail: str | None = None,
+    ) -> None:
+        self.set_status(status)
+        self.finish(json.dumps({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": status,
+                "message": message,
+                "detail": detail,
+            },
+            "timestamp": time.time(),
+        }))
+
     async def post(self) -> None:
         if self.vectorstore is None:
-            self.set_status(503)
-            self.finish(json.dumps({
-                "success": False,
-                "error": "RAG assistant is not available. Vector store not loaded.",
-            }))
+            self.send_error_response(
+                "RAG assistant is not available. Vector store not loaded.",
+                status=503,
+            )
             return
 
         try:
             body = json.loads(self.request.body)
             question = body.get("question", "").strip()
         except (json.JSONDecodeError, AttributeError):
-            self.set_status(400)
-            self.finish(json.dumps({
-                "success": False,
-                "error": "Request body must be JSON with a 'question' field.",
-            }))
+            self.send_error_response(
+                "Request body must be JSON with a 'question' field.",
+                status=400,
+            )
             return
 
         if not question:
-            self.set_status(400)
-            self.finish(json.dumps({
-                "success": False,
-                "error": "'question' cannot be empty.",
-            }))
+            self.send_error_response("'question' cannot be empty.", status=400)
             return
 
         if len(question) > MAX_QUESTION_LEN:
-            self.set_status(400)
-            self.finish(json.dumps({
-                "success": False,
-                "error": f"'question' must be at most {MAX_QUESTION_LEN} characters.",
-            }))
+            self.send_error_response(
+                f"'question' must be at most {MAX_QUESTION_LEN} characters.",
+                status=400,
+            )
             return
 
         # Retrieve relevant chunks from ChromaDB
@@ -172,16 +193,14 @@ class AskHandler(tornado.web.RequestHandler):
             chunks = self.vectorstore.similarity_search(question, k=TOP_K)
         except Exception as exc:
             log.error("ChromaDB similarity search failed: %s", exc)
-            self.set_status(500)
-            self.finish(json.dumps({"success": False, "error": "Vector search failed."}))
+            self.send_error_response("Vector search failed.", status=500)
             return
 
         if not chunks:
-            self.finish(json.dumps({
-                "success": True,
+            self.send_success({
                 "answer": "No relevant context found in the knowledge base.",
                 "sources": [],
-            }))
+            })
             return
 
         prompt = _build_prompt(question, chunks)
@@ -199,24 +218,17 @@ class AskHandler(tornado.web.RequestHandler):
             answer = content.strip() if content else ""
         except RagDependencyError as exc:
             log.error("%s", exc)
-            self.set_status(503)
-            self.finish(json.dumps({
-                "success": False,
-                "error": str(exc),
-            }))
+            self.send_error_response(str(exc), status=503)
             return
         except Exception as exc:
             log.error("Groq error: %s", exc)
-            self.set_status(502)
-            self.finish(json.dumps({
-                "success": False,
-                "error": "LLM request failed. Please try again later.",
-            }))
+            self.send_error_response(
+                "LLM request failed. Please try again later.", status=502
+            )
             return
 
         sources = sorted({c.metadata.get("source", "unknown") for c in chunks})
-        self.finish(json.dumps({
-            "success": True,
+        self.send_success({
             "answer": answer,
             "sources": sources,
-        }))
+        })
