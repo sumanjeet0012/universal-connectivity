@@ -777,7 +777,7 @@ wheels = [
 [[package]]
 name = "libp2p"
 version = "0.8.1"
-source = { git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=b25b748e7a0fc4d46e74b31877e5a467c1bf901a#b25b748e7a0fc4d46e74b31877e5a467c1bf901a" }
+source = { git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=metrics#516816fae6f20ee0d10e0362b6f1d39af7884a49" }
 dependencies = [
     { name = "aioquic" },
     { name = "anyio" },
@@ -1279,7 +1279,7 @@ requires-dist = [
     { name = "base58" },
     { name = "groq", marker = "extra == 'rag'", specifier = ">=1.0.0" },
     { name = "janus", specifier = ">=1.0.0" },
-    { name = "libp2p", git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=b25b748e7a0fc4d46e74b31877e5a467c1bf901a" },
+    { name = "libp2p", git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=metrics" },
     { name = "platformdirs", specifier = ">=4.0.0" },
     { name = "protobuf", specifier = ">=6.32.1,<7" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
