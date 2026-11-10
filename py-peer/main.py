@@ -38,15 +38,15 @@ def build_runtime(args: argparse.Namespace) -> ApplicationRuntime:
 def setup_logging(ui_mode: bool = False) -> None:
     """Setup logging configuration based on whether UI is active."""
     handlers: list[logging.Handler] = []
-    
+
     # Only add console handler if not in UI mode
     if not ui_mode:
         handlers.append(logging.StreamHandler())
-    
+
     # If no handlers, add a null handler to prevent logging errors
     if not handlers:
         handlers.append(logging.NullHandler())
-    
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(message)s",
@@ -66,11 +66,11 @@ def run_headless_in_thread(
         except Exception as e:
             logger.error(f"Error in headless service thread: {e}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
-    
+
     # Start the service in a daemon thread
     thread = threading.Thread(target=run_service, daemon=True)
     thread.start()
-    
+
     # Wait for the service to be ready. Also break out as soon as the service
     # reports a fatal startup failure: otherwise a bad port/seed/announce
     # address makes the process sit idle for the full 30 seconds.
@@ -88,7 +88,7 @@ def run_headless_in_thread(
         raise RuntimeError("Headless service failed to start")
     if not headless_service.ready:
         raise RuntimeError("Headless service failed to start within timeout")
-    
+
     logger.info("✅ Headless service is ready in background thread")
     return thread
 
@@ -206,7 +206,7 @@ async def main_async(args: argparse.Namespace) -> ApplicationRuntime | None:
 async def run_simple_interactive(runtime: ApplicationRuntime) -> None:
     """Run simple interactive mode."""
     connection_info = runtime.peer.connection_info().to_dict()
-    
+
     print(f"\n=== Universal Connectivity Chat ===")
     print(f"Nickname: {connection_info.get('nickname', 'Unknown')}")
     print(f"Peer ID: {connection_info.get('peer_id', 'Unknown')}")
@@ -214,7 +214,7 @@ async def run_simple_interactive(runtime: ApplicationRuntime) -> None:
     print(f"Type messages and press Enter to send. Type 'quit' to exit.")
     print(f"Commands: /peers, /status, /multiaddr")
     print()
-    
+
     # Start background task to monitor runtime events
     async with trio.open_nursery() as nursery:
         nursery.start_soon(monitor_runtime_events, runtime)
@@ -331,32 +331,32 @@ async def handle_user_input(runtime: ApplicationRuntime) -> None:
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Universal Connectivity Python Peer")
-    
+
     parser.add_argument(
         "--nick",
         type=str,
         help="Nickname to use for the chat"
     )
-    
+
     parser.add_argument(
         "--headless",
         action="store_true",
         help="Run without chat UI"
     )
-    
+
     parser.add_argument(
         "--ui",
         action="store_true",
         help="Use Textual TUI instead of simple interactive mode"
     )
-    
+
     parser.add_argument(
         "-c", "--connect",
         action="append",
         help="Address to connect to (can be used multiple times)",
         default=[]
     )
-    
+
     parser.add_argument(
         "-p", "--port",
         type=int,
@@ -391,13 +391,13 @@ def main() -> None:
         help="Multiaddr to advertise verbatim (repeatable). Overrides "
              "--announce-host. Must be dialable; wildcard hosts are rejected."
     )
-    
+
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable debug logging"
     )
-    
+
     parser.add_argument(
         "--no-strict-signing",
         action="store_true",
@@ -463,10 +463,10 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    
+
     # Default logging setup (will be reconfigured based on mode)
     setup_logging(ui_mode=False)
-    
+
     # Set debug level if verbose flag is provided
     if args.verbose:
         logger.setLevel(logging.DEBUG)
@@ -484,7 +484,7 @@ def main() -> None:
         ):
             logging.getLogger(_name).setLevel(logging.DEBUG)
         logger.debug("Debug logging enabled")
-    
+
     # Print routes and exit early if requested
     if getattr(args, 'api_routes', False):
         from api.server import _print_routes
@@ -538,15 +538,15 @@ def main() -> None:
 
             # Special handling for UI mode
             logger.info("Starting in UI mode...")
-            
+
             runtime = build_runtime(args)
 
             # Start the shared runtime in a background thread
             logger.info("Starting application runtime in background thread...")
             runtime.start_in_thread()
-            
+
             logger.info("Starting Textual UI in main thread...")
-            
+
             try:
                 # Create and run UI in main thread. The UI subscribes to the
                 # runtime EventBus; no legacy queues are needed.
@@ -560,14 +560,14 @@ def main() -> None:
                 runtime.request_stop()
                 runtime.join(10.0)
                 runtime.close()
-            
+
         else:
             # Configure logging for non-UI mode (console output enabled)
             setup_logging(ui_mode=False)
-            
+
             # Run the main async function for other modes
             trio.run(main_async, args)
-            
+
     except KeyboardInterrupt:
         logger.info("Application terminated by user")
     except Exception as e:

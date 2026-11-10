@@ -8,6 +8,7 @@ libp2p objects.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from queue import Empty, Full
@@ -17,8 +18,7 @@ import trio
 from libp2p.kad_dht.kad_dht import KadDHT
 
 from ..chatroom import MAX_TOPIC_NAME_LENGTH, MAX_TOPICS, NON_CHAT_TOPICS
-
-from ..constants import BOOTSTRAP_PEERS
+from ..constants import BOOTSTRAP_PEERS, DISCOVERY_SERVICE_TAG
 from ..errors import (
     ConflictError,
     NotReadyError,
@@ -28,6 +28,14 @@ from ..errors import (
 )
 
 logger = logging.getLogger("app.services.discovery")
+
+
+def _topic_to_dht_key(topic: str) -> str:
+    """Compute multihash hex string for a topic (matching go-libp2p nsToCid multihash)."""
+    digest = hashlib.sha256(topic.encode("utf-8")).digest()
+    # 0x12 = sha2-256, 0x20 = 32 bytes length
+    mh = bytes([0x12, len(digest)]) + digest
+    return mh.hex()
 
 
 class DiscoveryService:
@@ -312,6 +320,108 @@ class DiscoveryService:
             "message": f"Queued connections to {queued} bootstrap peers.",
             "bootstrap_peers_count": queued,
         }
+
+    async def run_dht_discovery(self) -> None:
+        """Periodic background task to provide and discover UC peers on Kademlia DHT."""
+        while not getattr(self._engine, "ready", False):
+            await trio.sleep(1)
+
+        await trio.sleep(5)
+        logger.info("🧭 Starting Kademlia DHT peer discovery worker")
+
+        dht_key_hex = _topic_to_dht_key(DISCOVERY_SERVICE_TAG)
+        rust_key = "universal-connectivity/0.1.0"
+
+        last_provide_time = 0.0
+        PROVIDE_INTERVAL = 120.0
+        SEARCH_INTERVAL = 30.0
+        TARGET_PUBSUB_PEERS = 8
+
+        while getattr(self._engine, "running", False):
+            try:
+                now = time.time()
+                dht = getattr(self._engine, "dht", None)
+                host = getattr(self._engine, "host", None)
+
+                if dht is not None and host is not None:
+                    # 1. Periodically announce our node as a provider
+                    if now - last_provide_time >= PROVIDE_INTERVAL:
+                        try:
+                            await dht.provide(dht_key_hex)
+                            await dht.provide(rust_key)
+                            last_provide_time = now
+                            logger.info(
+                                "📢 Advertised universal-connectivity provider records on DHT"
+                            )
+                        except Exception as exc:
+                            logger.debug("DHT provide error: %s", exc)
+
+                    # 2. Check pubsub peer count; if low, search for providers
+                    current_pubsub_peers = self.pubsub_peers()
+                    if len(current_pubsub_peers) < TARGET_PUBSUB_PEERS:
+                        logger.info(
+                            "PubSub peer count (%d) below target (%d); querying DHT providers...",
+                            len(current_pubsub_peers),
+                            TARGET_PUBSUB_PEERS,
+                        )
+                        try:
+                            providers = await dht.find_providers(
+                                dht_key_hex, count=20
+                            )
+                            try:
+                                rust_providers = await dht.find_providers(
+                                    rust_key, count=20
+                                )
+                            except Exception:
+                                rust_providers = []
+                            all_providers = providers + rust_providers
+
+                            my_id = str(host.get_id())
+                            connected = {
+                                str(p) for p in host.get_connected_peers()
+                            }
+
+                            dial_count = 0
+                            for pinfo in all_providers:
+                                pid = str(pinfo.peer_id)
+                                if pid == my_id or pid in connected:
+                                    continue
+                                if pinfo.addrs:
+                                    host.get_peerstore().add_addrs(
+                                        pinfo.peer_id, pinfo.addrs, ttl=3600
+                                    )
+                                    for addr in pinfo.addrs:
+                                        addr_str = str(addr)
+                                        if f"/p2p/{pid}" not in addr_str:
+                                            addr_str = f"{addr_str}/p2p/{pid}"
+                                        if self._connections is not None:
+                                            if self._connections.queue_connection(
+                                                addr_str
+                                            ):
+                                                dial_count += 1
+                                                break
+
+                            if dial_count > 0:
+                                logger.info(
+                                    "🧭 Queued connections to %d discovered DHT providers",
+                                    dial_count,
+                                )
+                        except Exception as exc:
+                            logger.debug("DHT find_providers error: %s", exc)
+
+                    # 3. Fallback: if pubsub peers dropped to 0, trigger bootstrap dials
+                    if len(current_pubsub_peers) == 0:
+                        logger.info(
+                            "No active PubSub peers; re-triggering bootstrap dials"
+                        )
+                        self.bootstrap()
+
+            except trio.Cancelled:
+                break
+            except Exception as exc:
+                logger.warning("Error in DHT discovery worker: %s", exc)
+
+            await trio.sleep(SEARCH_INTERVAL)
 
     async def _system(self, message: str) -> None:
         if self._notifications is not None:

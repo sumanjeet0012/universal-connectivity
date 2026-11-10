@@ -21,10 +21,15 @@ from libp2p.bitswap import BitswapClient, MemoryBlockStore
 from libp2p.bitswap.dag import MerkleDag
 from libp2p.discovery.bootstrap import BootstrapDiscovery
 from libp2p.host.exceptions import StreamFailure
+import libp2p.identity.identify.identify as identify_mod
 from libp2p.identity.identify.identify import (
     ID as IDENTIFY_PROTOCOL_ID,
     identify_handler_for,
 )
+
+# Align identify agent version with universal-connectivity standard so
+# go-peer, rust-peer, and other peers recognise py-peer as a UC node.
+identify_mod.AGENT_VERSION = "universal-connectivity/0.1.0"
 from libp2p.kad_dht.kad_dht import DHTMode, KadDHT
 from libp2p.network.config import ConnectionConfig
 from libp2p.peer.peerinfo import PeerInfo

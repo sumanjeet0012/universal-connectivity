@@ -141,15 +141,27 @@ class PeerService:
 
                 if new_peers:
                     chat_room = getattr(engine, "chat_room", None)
-                    announce = getattr(chat_room, "announce_profile", None)
-                    if announce is not None:
-                        try:
-                            await announce()
-                        except Exception:
-                            logger.debug(
-                                "Could not announce profile after peer connect",
-                                exc_info=True,
-                            )
+                    if chat_room is not None:
+                        announce = getattr(chat_room, "announce_profile", None)
+                        if announce is not None:
+                            try:
+                                await announce()
+                            except Exception:
+                                logger.debug(
+                                    "Could not announce profile after peer connect",
+                                    exc_info=True,
+                                )
+                        announce_disc = getattr(
+                            chat_room, "announce_discovery", None
+                        )
+                        if announce_disc is not None:
+                            try:
+                                await announce_disc()
+                            except Exception:
+                                logger.debug(
+                                    "Could not announce discovery after peer connect",
+                                    exc_info=True,
+                                )
 
                 logger.info(f"Connected peers are: {len(current)}")
                 logger.info(

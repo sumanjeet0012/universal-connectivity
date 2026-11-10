@@ -80,6 +80,7 @@ class ServiceBundle:
         nursery.start_soon(self.messaging.process_incoming)
         nursery.start_soon(self.messaging.process_outgoing)
         nursery.start_soon(self.discovery.process_topic_subscriptions)
+        nursery.start_soon(self.discovery.run_dht_discovery)
         nursery.start_soon(self.connections.process_peer_connections)
         nursery.start_soon(self.files.process_file_shares)
         nursery.start_soon(self.files.process_file_downloads)

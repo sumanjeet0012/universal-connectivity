@@ -100,13 +100,17 @@ pretty = true
 module = ["multiaddr.*", "aiortc.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["core.pb.*"]
+ignore_errors = true
+
 # Pyrefly runs alongside mypy in py-libp2p. It checks the same application
 # modules; the optional RAG tree is excluded because its third-party packages
 # are not part of the base install.
 [tool.pyrefly]
 python_version = "3.12"
 project_includes = ["main.py", "core", "app", "api", "ui"]
-project_excludes = ["llm/**"]
+project_excludes = ["llm/**", "core/pb/**"]
 # These optional/third-party packages do not ship type information in all
 # installs, matching the mypy ``ignore_missing_imports`` policy above.
 replace_imports_with_any = [
