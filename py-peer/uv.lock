@@ -777,12 +777,13 @@ wheels = [
 [[package]]
 name = "libp2p"
 version = "0.8.1"
-source = { git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=fbf4ff94d7201edfa90992574c4879738f2dab96#fbf4ff94d7201edfa90992574c4879738f2dab96" }
+source = { git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=a445c3c3b52329f0ab6752ded653199ff3c3ddec#a445c3c3b52329f0ab6752ded653199ff3c3ddec" }
 dependencies = [
     { name = "aioquic" },
     { name = "anyio" },
     { name = "base58" },
     { name = "cbor2" },
+    { name = "certifi" },
     { name = "coincurve" },
     { name = "fastecdsa", marker = "sys_platform != 'win32'" },
     { name = "grpcio" },
@@ -1278,7 +1279,7 @@ requires-dist = [
     { name = "base58" },
     { name = "groq", marker = "extra == 'rag'", specifier = ">=1.0.0" },
     { name = "janus", specifier = ">=1.0.0" },
-    { name = "libp2p", git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=fbf4ff94d7201edfa90992574c4879738f2dab96" },
+    { name = "libp2p", git = "https://github.com/sumanjeet0012/py-libp2p.git?rev=a445c3c3b52329f0ab6752ded653199ff3c3ddec" },
     { name = "platformdirs", specifier = ">=4.0.0" },
     { name = "protobuf", specifier = ">=6.32.1,<7" },
     { name = "python-dotenv", specifier = ">=1.2.2" },

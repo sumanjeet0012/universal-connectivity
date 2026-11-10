@@ -82,16 +82,14 @@ def filter_compatible_peer_info(peer_info: PeerInfo) -> bool:
         "/tcp/",
         "/ws",
         "/wss",
-        "/quic",
         "/quic-v1",
-        "/webtransport",
-        "/webrtc",
-        "/webrtc-direct",
+        "/quic",
     )
     for addr in peer_info.addrs:
         addr_str = str(addr)
         if any(marker in addr_str for marker in supported_markers):
-            return True
+            if "/webtransport" not in addr_str and "/webrtc" not in addr_str:
+                return True
     return False
 
 
