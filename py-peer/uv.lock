@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -872,13 +872,14 @@ wheels = [
 
 [[package]]
 name = "libp2p"
-version = "0.8.1"
+version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aioquic" },
     { name = "anyio" },
     { name = "base58" },
     { name = "cbor2" },
+    { name = "certifi" },
     { name = "coincurve" },
     { name = "fastecdsa", marker = "sys_platform != 'win32'" },
     { name = "grpcio" },
@@ -904,9 +905,9 @@ dependencies = [
     { name = "types-requests" },
     { name = "zeroconf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/55/07/7da82f3cf3705278c583a5353a1235875ea886324ee7d3cd94ebd4404e56/libp2p-0.8.1.tar.gz", hash = "sha256:3fb1493d215d10205f56095014e21c3d4eec025a9becb3e73a768d1151f27fd0", size = 36281043, upload-time = "2026-10-22T19:48:27.887Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/30/e95e1458825aeba8bd612ee7504243f26844039c936114997dd2b99914a3/libp2p-0.8.2.tar.gz", hash = "sha256:ba9d0580a51ac3c52a03c213410b2a7252f215ac4774eaea34a2dac4325bd8b1", size = 36318863, upload-time = "2026-11-20T19:39:02.908Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/c0/bc99a6cfb57965313649c3d6f899fa00e51f6b05fb3418459a052d7392b2/libp2p-0.8.1-py3-none-any.whl", hash = "sha256:3d53daa20a6a78984c9b4ed1654d771757b187282f90376d7156c2b67828b308", size = 1317217, upload-time = "2026-10-22T19:48:23.894Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/69/0f87eeaec2a0094701145028e44865b1d01dd2beac34df5baf23993eefd6/libp2p-0.8.2-py3-none-any.whl", hash = "sha256:52667f11dd53af8634afe81e7f1424e1e519cfee0d7159a81e9f42f73a3cdb09", size = 1342530, upload-time = "2026-11-20T19:38:57.784Z" },
 ]
 
 [[package]]
@@ -2111,7 +2112,7 @@ requires-dist = [
     { name = "aiortc", specifier = ">=1.15.0" },
     { name = "base58" },
     { name = "janus", specifier = ">=1.0.0" },
-    { name = "libp2p", specifier = ">=0.8.1" },
+    { name = "libp2p", specifier = ">=0.8.2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.18,<3" },
     { name = "platformdirs", specifier = ">=4.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.4" },
